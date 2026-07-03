@@ -447,6 +447,28 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .group-label { grid-column: 1 / -1; font-family: 'Special Elite', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em; color: var(--ink-faint); border-bottom: 1px dashed var(--line); padding-bottom: 4px; margin-top: 10px; }
 .group-label:first-child { margin-top: 0; }
 
+/* la mesa de veto — Phase C review of the bandeja */
+.desk-bar {
+  grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  border: 1px dashed var(--accent-soft); border-radius: 3px; padding: 8px 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--ink-dim);
+}
+.desk-bar .desk-title { font-family: 'Special Elite', monospace; text-transform: uppercase; letter-spacing: 0.18em; color: var(--accent); }
+.desk-bar kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--ink); font-size: 10px; font-family: inherit; }
+@media (max-width: 880px) { .desk-keys { display: none; } }
+.card.desk-sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+.shelf-hint { font-family: 'JetBrains Mono', monospace; color: var(--c-dusty-fg); }
+.redo-flag { font-family: 'Special Elite', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); border: 1px dashed var(--gold); border-radius: 2px; padding: 0 5px; }
+.desk-actions { display: flex; gap: 6px; margin-top: 2px; }
+.desk-actions button {
+  flex: 1; background: var(--bg-elev); border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+  color: var(--ink-dim); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 4px 0;
+  transition: border-color 0.12s, color 0.12s;
+}
+.desk-actions button:hover { border-color: var(--accent-soft); color: var(--ink); }
+.desk-actions button.dk-x { flex: 0 0 44px; }
+.desk-actions button.dk-x:hover { border-color: var(--danger); color: var(--danger); }
+
 /* the folio — note reader */
 .folio { max-width: 720px; animation: fadeUp 0.35s cubic-bezier(0.2,0.8,0.2,1); }
 .folio-plate {
@@ -1154,6 +1176,127 @@ async function setSensitivity(note, newVal) {
   return true;
 }
 
+/* ── la mesa de veto (Phase C): promote / re-shelf / reject / redo on bandeja fichas.
+   Same discipline as the candado: fresh GET for the sha, sha-guarded write, `veto:` commit
+   message, then keep the local corpus + cache honest. Reject deletes the CARD only — the
+   texto stays in the stacks and git history keeps even the card. */
+const SHELVES = ['notas', 'cursos', 'fuentes', 'casos', 'ensayos', 'oficios', 'proyectos', 'creativo', 'hitos'];
+
+async function ghWrite(method, path, bodyObj) {
+  const pat = state.settings.sync.githubPat;
+  if (!pat) { toast('se necesita un token con scope repo — settings.', true); throw new Error('sin token'); }
+  const res = await fetch(`https://api.github.com/repos/${state.corpus.repo}/contents/${path}`, {
+    method,
+    headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ branch: state.corpus.branch, ...bodyObj }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(`${res.status} — ${t.slice(0, 100)}`); }
+  return res;
+}
+function saveCorpusCache() { try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); } catch (e) {} }
+
+function stripFmLines(content, keys) {
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return content;
+  const fm = m[1].split(/\r?\n/).filter(l => !keys.some(k => l.startsWith(k + ':'))).join('\n');
+  return content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
+}
+
+async function promoteFicha(note, shelf) {
+  const repo = state.corpus.repo, branch = state.corpus.branch;
+  const newPath = `${shelf}/${note.slug}.md`;
+  let taken = true;
+  try { await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) { if (!String(e.message).startsWith('404')) throw e; taken = false; }
+  if (taken) throw new Error(`ya hay una ficha en ${newPath}`);
+  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  // the clerk's shelf suggestion (and any pending redo) is consumed on the way out of the bandeja
+  const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo']);
+  await ghWrite('PUT', newPath, { message: `veto: promote ${note.slug} → ${shelf}`, content: utf8ToB64(content) });
+  await ghWrite('DELETE', note.path, { message: `veto: promote ${note.slug} → ${shelf} (sale de la bandeja)`, sha: j.sha });
+  note.path = newPath; note.folder = shelf; delete note.fm.shelf; delete note.fm.redo;
+  saveCorpusCache();
+}
+
+async function rejectFicha(note) {
+  const repo = state.corpus.repo, branch = state.corpus.branch;
+  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  await ghWrite('DELETE', note.path, { message: `veto: reject ${note.slug}`, sha: j.sha });
+  corpus.notes = corpus.notes.filter(n => n !== note);
+  saveCorpusCache();
+}
+
+async function setRedo(note, hint) {
+  const repo = state.corpus.repo, branch = state.corpus.branch;
+  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  let content = b64ToUtf8(j.content);
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) throw new Error('la ficha no tiene frontmatter');
+  const clean = hint.replace(/\s+/g, ' ').trim();
+  let fm = m[1];
+  if (/^redo:/m.test(fm)) fm = fm.replace(/^redo:.*$/m, `redo: ${clean}`);
+  else fm += `\nredo: ${clean}`;
+  content = content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
+  await ghWrite('PUT', note.path, { message: `veto: redo ${note.slug}`, content: utf8ToB64(content), sha: j.sha });
+  note.fm.redo = clean;
+  saveCorpusCache();
+}
+
+/* the desk driver — keyboard-first; deskNotes mirrors the bandeja list as last rendered */
+let deskNotes = [], deskSel = 0, deskBusy = false;
+
+function deskSelect(idx) {
+  deskSel = Math.max(0, Math.min(idx, deskNotes.length - 1));
+  document.querySelectorAll('.card.desk-sel').forEach(c => c.classList.remove('desk-sel'));
+  const el = document.querySelector(`.card[data-idx="${deskSel}"]`);
+  if (el) { el.classList.add('desk-sel'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+}
+
+async function deskVerdict(kind, note) {
+  if (deskBusy || !note) return;
+  deskBusy = true;
+  try {
+    if (kind === 'promote' || kind === 'shelf') {
+      let shelf = String(note.fm.shelf || '');
+      if (kind === 'shelf' || !SHELVES.includes(shelf)) {
+        shelf = String(await askPrompt('promover a…', SHELVES.join(' · '), SHELVES.includes(shelf) ? shelf : 'notas') || '').trim().toLowerCase();
+        if (!shelf) return;
+        if (!SHELVES.includes(shelf)) { toast(`“${shelf}” no es un estante.`, true); return; }
+      }
+      await promoteFicha(note, shelf);
+      toast(`❧ ${note.slug} → ${shelf}`);
+    } else if (kind === 'redo') {
+      const hint = await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
+      if (!hint) return;
+      await setRedo(note, hint);
+      toast('marcada — el archivero la rehace esta noche.');
+    } else if (kind === 'reject') {
+      if (!confirm(`Rechazar “${note.fm.title || note.slug}” — la tarjeta sale del catálogo. El texto queda en los stacks y git recuerda la ficha. ¿Seguro?`)) return;
+      await rejectFicha(note);
+      toast('ficha rechazada.');
+    }
+    renderAll();
+  } catch (e) { console.error('veto desk', e); toast('veto falló: ' + e.message, true); }
+  finally { deskBusy = false; }
+}
+
+document.addEventListener('keydown', e => {
+  if (view.mode !== 'list' || view.drawer !== 'bandeja' || view.q || !deskNotes.length) return;
+  if (settingsModal.open || promptModal.open || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  const n = deskNotes[deskSel];
+  const act = {
+    j: () => deskSelect(deskSel + 1),
+    k: () => deskSelect(deskSel - 1),
+    p: () => deskVerdict('promote', n),
+    s: () => deskVerdict('shelf', n),
+    r: () => deskVerdict('redo', n),
+    x: () => deskVerdict('reject', n),
+    Enter: () => { if (n) { view = { mode: 'note', drawer: 'bandeja', slug: n.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 }); } },
+  }[e.key];
+  if (act) { e.preventDefault(); act(); }
+});
+
 /* ── the catalogue drawers (sidebar) ── */
 const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos' };
 const TYPE_STAMP = {
@@ -1279,21 +1422,49 @@ function excerptOf(n, q) {
   return flat.slice(0, 170);
 }
 
-function cardHtml(n, q) {
+function cardHtml(n, q, deskIdx = -1) {
   const type = n.fm.type || 'fragment';
   const stampCls = TYPE_STAMP[type] || 'st-otro';
   const priv = n.fm.sensitivity === 'private' ? '<span class="lock" title="privado — excluido de digests">🔒</span>' : '';
-  return `<div class="card" data-open="${escapeHtml(n.slug)}">
+  const desk = deskIdx >= 0;
+  const foot = desk
+    ? `${n.fm.redo ? `<span class="redo-flag" title="${escapeHtml(String(n.fm.redo))}">↺ redo</span> ` : ''}${priv} <span class="shelf-hint">→ ${escapeHtml(SHELVES.includes(n.fm.shelf) ? String(n.fm.shelf) : '¿estante?')}</span>`
+    : `${priv} ${escapeHtml(n.folder)}`;
+  return `<div class="card${desk && deskIdx === deskSel ? ' desk-sel' : ''}" data-open="${escapeHtml(n.slug)}"${desk ? ` data-idx="${deskIdx}"` : ''}>
     <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp ${stampCls}">${escapeHtml(TYPE_ES[type] || type)}</span></div>
     <div class="excerpt">${escapeHtml(excerptOf(n, q))}</div>
-    <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${priv} ${escapeHtml(n.folder)}</span></div>
+    <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${foot}</span></div>
+    ${desk ? `<div class="desk-actions">
+      <button data-verdict="promote" title="promover al estante sugerido (p)">✓ promover</button>
+      <button data-verdict="shelf" title="elegir otro estante (s)">✎ estante</button>
+      <button data-verdict="redo" title="re-destilar con contexto humano (r)">↺ redo</button>
+      <button class="dk-x" data-verdict="reject" title="rechazar — borra la tarjeta, no el texto (x)">✕</button>
+    </div>` : ''}
   </div>`;
+}
+
+function deskBarHtml(notes) {
+  const privs = notes.filter(n => n.fm.sensitivity === 'private').length;
+  const redos = notes.filter(n => n.fm.redo).length;
+  return `<div class="desk-bar"><span class="desk-title">mesa de veto</span>
+    <span>${notes.length} pendiente${notes.length === 1 ? '' : 's'}${privs ? ` · ${privs} 🔒 lee despacio` : ''}${redos ? ` · ${redos} ↺ esperando al archivero` : ''}</span>
+    <span class="desk-keys"><kbd>j</kbd><kbd>k</kbd> elegir · <kbd>p</kbd> promover · <kbd>s</kbd> estante · <kbd>r</kbd> redo · <kbd>x</kbd> rechazar · <kbd>↵</kbd> abrir</span></div>`;
+}
+
+function wireDesk(root) {
+  root.querySelectorAll('[data-verdict]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();                       // the card underneath opens the folio
+    const idx = Number(b.closest('.card').dataset.idx);
+    deskSelect(idx);
+    deskVerdict(b.dataset.verdict, deskNotes[idx]);
+  }));
 }
 
 function renderView() {
   const root = document.getElementById('app-root');
   const header = document.getElementById('current-view');
   const meta = document.getElementById('view-meta');
+  deskNotes = [];   // re-armed below only when the bandeja list actually renders
 
   if (!corpus) {
     header.textContent = 'El catálogo';
@@ -1362,7 +1533,11 @@ function renderView() {
       notes.filter(n => n.folder === f).map(n => cardHtml(n, q)).join('')
     ).join('') + `</div>`;
   } else {
-    root.innerHTML = `<div class="cards">${notes.map(n => cardHtml(n, q)).join('')}</div>`;
+    const desk = !q && view.drawer === 'bandeja';
+    deskNotes = desk ? notes : [];
+    if (desk) deskSel = Math.max(0, Math.min(deskSel, notes.length - 1));
+    root.innerHTML = `<div class="cards">${desk ? deskBarHtml(notes) : ''}${notes.map((n, i) => cardHtml(n, q, desk ? i : -1)).join('')}</div>`;
+    if (desk) wireDesk(root);
   }
   wireOpeners(root);
 }
