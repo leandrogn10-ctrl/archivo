@@ -1096,7 +1096,8 @@ async function pullCorpus() {
   btn.textContent = '…'; btn.disabled = true;
   try {
     const tree = await ghGet(`/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-    const files = (tree.tree || []).filter(f => f.type === 'blob' && f.path.endsWith('.md') && f.path !== 'README.md');
+    const files = (tree.tree || []).filter(f => f.type === 'blob' && f.path.endsWith('.md') && f.path !== 'README.md'
+      && !f.path.startsWith('textos/'));   // the stacks: full-doc snapshots, not fichas — linked from the plate, never drawers
     const notes = [];
     for (let i = 0; i < files.length; i += 6) {
       const batch = files.slice(i, i + 6);
@@ -1287,6 +1288,7 @@ function renderView() {
         ${n.fm.verified === true ? `<span class="plate-item" style="color:var(--c-sage-fg)">✓ verificado</span>` : ''}
         ${n.fm.sensitivity === 'private' ? `<span class="plate-item" style="color:var(--gold)">🔒 privado</span>` : ''}
         ${n.fm.source && /^https?:/.test(String(n.fm.source)) ? `<a href="${escapeHtml(String(n.fm.source))}" target="_blank" rel="noopener">documento original ↗</a>` : ''}
+        ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo ↗</a>` : ''}
       </div>
       <div class="folio-body">${mdRender(n.body)}</div>
       <div style="margin-top:18px">${tags}</div>
