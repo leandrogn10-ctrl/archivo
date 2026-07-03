@@ -1085,7 +1085,9 @@ async function ghGet(path) {
   const headers = { 'Accept': 'application/vnd.github+json' };
   const pat = state.settings.sync.githubPat;
   if (pat) headers['Authorization'] = `Bearer ${pat}`;
-  const res = await fetch(`https://api.github.com${path}`, { headers });
+  // no-store: GitHub sends max-age=60, and a cached GET hands the veto desk a stale
+  // sha — the write-after-read then 409s (seen live: redo → promote inside a minute)
+  const res = await fetch(`https://api.github.com${path}`, { headers, cache: 'no-store' });
   if (!res.ok) { const txt = await res.text(); throw new Error(`${res.status} — ${txt.slice(0, 100)}`); }
   return res.json();
 }
@@ -1205,14 +1207,15 @@ function stripFmLines(content, keys) {
 async function promoteFicha(note, shelf) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
   const newPath = `${shelf}/${note.slug}.md`;
-  let taken = true;
-  try { await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); }
-  catch (e) { if (!String(e.message).startsWith('404')) throw e; taken = false; }
-  if (taken) throw new Error(`ya hay una ficha en ${newPath}`);
   const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
   // the clerk's shelf suggestion (and any pending redo) is consumed on the way out of the bandeja
   const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo']);
-  await ghWrite('PUT', newPath, { message: `veto: promote ${note.slug} → ${shelf}`, content: utf8ToB64(content) });
+  let dest = null;
+  try { dest = await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) { if (!String(e.message).startsWith('404')) throw e; }
+  if (dest && b64ToUtf8(dest.content) !== content) throw new Error(`ya hay una ficha distinta en ${newPath}`);
+  // dest with identical content = a previous promote was cut off after the copy — just finish the move
+  if (!dest) await ghWrite('PUT', newPath, { message: `veto: promote ${note.slug} → ${shelf}`, content: utf8ToB64(content) });
   await ghWrite('DELETE', note.path, { message: `veto: promote ${note.slug} → ${shelf} (sale de la bandeja)`, sha: j.sha });
   note.path = newPath; note.folder = shelf; delete note.fm.shelf; delete note.fm.redo;
   saveCorpusCache();
