@@ -473,6 +473,9 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .backlinks h4 { font-family: 'Special Elite', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.18em; color: var(--ink-faint); margin-bottom: 10px; }
 .backlinks .bl { display: block; padding: 6px 10px; border-radius: 2px; color: var(--ink-dim); font-size: 12.5px; cursor: pointer; border-bottom: none; }
 .backlinks .bl:hover { background: var(--paper); color: var(--ink); }
+.plate-sens { font-family: inherit; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gold); border: 1px dashed transparent; border-radius: 2px; padding: 1px 6px; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+.plate-sens:hover { border-color: var(--accent-soft); color: var(--accent); }
+.plate-sens.busy { opacity: 0.5; pointer-events: none; }
 .back-btn { color: var(--ink-faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; padding: 4px 0; margin-bottom: 14px; display: inline-block; }
 .back-btn:hover { color: var(--accent); }
 .tag-chip { display: inline-block; font-size: 10px; color: var(--ink-faint); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; margin: 0 4px 4px 0; }
@@ -1121,6 +1124,36 @@ async function pullCorpus() {
 }
 document.getElementById('refresh-btn').addEventListener('click', pullCorpus);
 
+/* ── veto-pass micro-writes: human verdicts only, one frontmatter line at a time ── */
+function utf8ToB64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+async function setSensitivity(note, newVal) {
+  const pat = state.settings.sync.githubPat;
+  if (!pat) { toast('se necesita un token con scope repo — settings.', true); return false; }
+  const repo = state.corpus.repo, branch = state.corpus.branch;
+  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  let content = b64ToUtf8(j.content);
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) throw new Error('la ficha no tiene frontmatter');
+  let fm = m[1];
+  if (/^sensitivity:/m.test(fm)) fm = fm.replace(/^sensitivity:.*$/m, `sensitivity: ${newVal}`);
+  else fm += `\nsensitivity: ${newVal}`;
+  content = content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${note.path}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: `veto: ${note.slug} sensitivity → ${newVal}`, content: utf8ToB64(content), sha: j.sha, branch }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(`${res.status} — ${t.slice(0, 100)}`); }
+  note.fm.sensitivity = newVal;                                   // keep the local corpus + cache honest
+  try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); } catch (e) {}
+  return true;
+}
+
 /* ── the catalogue drawers (sidebar) ── */
 const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos' };
 const TYPE_STAMP = {
@@ -1286,7 +1319,7 @@ function renderView() {
         ${n.fm.account ? `<span class="plate-item">cuenta <b>${escapeHtml(String(n.fm.account))}</b></span>` : ''}
         ${n.fm.provenance ? `<span class="plate-item">pluma <b>${escapeHtml(String(n.fm.provenance))}</b></span>` : ''}
         ${n.fm.verified === true ? `<span class="plate-item" style="color:var(--c-sage-fg)">✓ verificado</span>` : ''}
-        ${n.fm.sensitivity === 'private' ? `<span class="plate-item" style="color:var(--gold)">🔒 privado</span>` : ''}
+        <button class="plate-sens" id="sens-toggle" title="click para cambiar la sensibilidad (escribe al repo)">${n.fm.sensitivity === 'private' ? '🔒 privado' : '🔓 normal'}</button>
         ${n.fm.source && /^https?:/.test(String(n.fm.source)) ? `<a href="${escapeHtml(String(n.fm.source))}" target="_blank" rel="noopener">documento original ↗</a>` : ''}
         ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo ↗</a>` : ''}
       </div>
@@ -1296,6 +1329,17 @@ function renderView() {
         `<a class="bl" data-open="${escapeHtml(b.slug)}">❧ ${escapeHtml(b.fm.title || b.slug)}</a>`).join('')}</div>` : ''}
     </div>`;
     document.getElementById('back-btn').addEventListener('click', () => { view = { mode: 'list', drawer: view.drawer, slug: null, q: '' }; renderAll(); });
+    const sensBtn = document.getElementById('sens-toggle');
+    if (sensBtn) sensBtn.addEventListener('click', async () => {
+      const cur = n.fm.sensitivity === 'private' ? 'private' : 'normal';
+      const next = cur === 'private' ? 'normal' : 'private';
+      if (!confirm(cur === 'private'
+        ? 'Quitar el candado — esta ficha podrá entrar a digests, Wrapped y recall. ¿Seguro?'
+        : 'Poner el candado — esta ficha queda fuera de digests, Wrapped y recall. ¿Seguro?')) return;
+      sensBtn.classList.add('busy');
+      try { if (await setSensitivity(n, next)) { toast(next === 'private' ? 'candado puesto.' : 'candado quitado.'); renderAll(); } }
+      catch (e) { console.error('sensitivity', e); toast('no se pudo escribir: ' + e.message, true); sensBtn.classList.remove('busy'); }
+    });
     wireOpeners(root);
     return;
   }
