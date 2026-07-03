@@ -1204,10 +1204,35 @@ function stripFmLines(content, keys) {
   return content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
 }
 
-async function promoteFicha(note, shelf) {
+/* verdicts are OPTIMISTIC: the local corpus mutates and re-renders instantly, and the
+   GitHub writes drain through a serial background queue (parallel contents-API commits
+   race on the branch head). A failed write reverts its ficha, re-renders, and reports. */
+let deskPending = 0;
+const deskQueue = [];
+function enqueueVeto(label, op, revert) {
+  deskQueue.push({ label, op, revert });
+  deskPending++;
+  pumpVetoQueue();
+}
+let deskPumping = false;
+async function pumpVetoQueue() {
+  if (deskPumping) return;
+  deskPumping = true;
+  while (deskQueue.length) {
+    const t = deskQueue.shift();
+    try { await t.op(); }
+    catch (e) { console.error('veto', t.label, e); t.revert(); renderAll(); toast(`veto falló (${t.label}) — revertido: ${e.message}`, true); }
+    finally { deskPending--; }
+  }
+  deskPumping = false;
+}
+window.addEventListener('beforeunload', e => {
+  if (deskPending > 0) { e.preventDefault(); e.returnValue = ''; }   // verdicts still flushing
+});
+
+async function promoteRemote(oldPath, newPath, slug, shelf) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const newPath = `${shelf}/${note.slug}.md`;
-  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  const j = await ghGet(`/repos/${repo}/contents/${oldPath}?ref=${encodeURIComponent(branch)}`);
   // the clerk's shelf suggestion (and any pending redo) is consumed on the way out of the bandeja
   const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo']);
   let dest = null;
@@ -1215,38 +1240,31 @@ async function promoteFicha(note, shelf) {
   catch (e) { if (!String(e.message).startsWith('404')) throw e; }
   if (dest && b64ToUtf8(dest.content) !== content) throw new Error(`ya hay una ficha distinta en ${newPath}`);
   // dest with identical content = a previous promote was cut off after the copy — just finish the move
-  if (!dest) await ghWrite('PUT', newPath, { message: `veto: promote ${note.slug} → ${shelf}`, content: utf8ToB64(content) });
-  await ghWrite('DELETE', note.path, { message: `veto: promote ${note.slug} → ${shelf} (sale de la bandeja)`, sha: j.sha });
-  note.path = newPath; note.folder = shelf; delete note.fm.shelf; delete note.fm.redo;
-  saveCorpusCache();
+  if (!dest) await ghWrite('PUT', newPath, { message: `veto: promote ${slug} → ${shelf}`, content: utf8ToB64(content) });
+  await ghWrite('DELETE', oldPath, { message: `veto: promote ${slug} → ${shelf} (sale de la bandeja)`, sha: j.sha });
 }
 
-async function rejectFicha(note) {
+async function rejectRemote(path, slug) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
-  await ghWrite('DELETE', note.path, { message: `veto: reject ${note.slug}`, sha: j.sha });
-  corpus.notes = corpus.notes.filter(n => n !== note);
-  saveCorpusCache();
+  const j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`);
+  await ghWrite('DELETE', path, { message: `veto: reject ${slug}`, sha: j.sha });
 }
 
-async function setRedo(note, hint) {
+async function redoRemote(path, slug, clean) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const j = await ghGet(`/repos/${repo}/contents/${note.path}?ref=${encodeURIComponent(branch)}`);
+  const j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`);
   let content = b64ToUtf8(j.content);
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) throw new Error('la ficha no tiene frontmatter');
-  const clean = hint.replace(/\s+/g, ' ').trim();
   let fm = m[1];
   if (/^redo:/m.test(fm)) fm = fm.replace(/^redo:.*$/m, `redo: ${clean}`);
   else fm += `\nredo: ${clean}`;
   content = content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
-  await ghWrite('PUT', note.path, { message: `veto: redo ${note.slug}`, content: utf8ToB64(content), sha: j.sha });
-  note.fm.redo = clean;
-  saveCorpusCache();
+  await ghWrite('PUT', path, { message: `veto: redo ${slug}`, content: utf8ToB64(content), sha: j.sha });
 }
 
 /* the desk driver — keyboard-first; deskNotes mirrors the bandeja list as last rendered */
-let deskNotes = [], deskSel = 0, deskBusy = false;
+let deskNotes = [], deskSel = 0;
 
 function deskSelect(idx) {
   deskSel = Math.max(0, Math.min(idx, deskNotes.length - 1));
@@ -1256,31 +1274,46 @@ function deskSelect(idx) {
 }
 
 async function deskVerdict(kind, note) {
-  if (deskBusy || !note) return;
-  deskBusy = true;
-  try {
-    if (kind === 'promote' || kind === 'shelf') {
-      let shelf = String(note.fm.shelf || '');
-      if (kind === 'shelf' || !SHELVES.includes(shelf)) {
-        shelf = String(await askPrompt('promover a…', SHELVES.join(' · '), SHELVES.includes(shelf) ? shelf : 'notas') || '').trim().toLowerCase();
-        if (!shelf) return;
-        if (!SHELVES.includes(shelf)) { toast(`“${shelf}” no es un estante.`, true); return; }
-      }
-      await promoteFicha(note, shelf);
-      toast(`❧ ${note.slug} → ${shelf}`);
-    } else if (kind === 'redo') {
-      const hint = await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
-      if (!hint) return;
-      await setRedo(note, hint);
-      toast('marcada — el archivero la rehace esta noche.');
-    } else if (kind === 'reject') {
-      if (!confirm(`Rechazar “${note.fm.title || note.slug}” — la tarjeta sale del catálogo. El texto queda en los stacks y git recuerda la ficha. ¿Seguro?`)) return;
-      await rejectFicha(note);
-      toast('ficha rechazada.');
+  if (!note) return;
+  if (kind === 'promote' || kind === 'shelf') {
+    let shelf = String(note.fm.shelf || '');
+    if (kind === 'shelf' || !SHELVES.includes(shelf)) {
+      shelf = String(await askPrompt('promover a…', SHELVES.join(' · '), SHELVES.includes(shelf) ? shelf : 'notas') || '').trim().toLowerCase();
+      if (!shelf) return;
+      if (!SHELVES.includes(shelf)) { toast(`“${shelf}” no es un estante.`, true); return; }
     }
-    renderAll();
-  } catch (e) { console.error('veto desk', e); toast('veto falló: ' + e.message, true); }
-  finally { deskBusy = false; }
+    const prev = { path: note.path, folder: note.folder, shelf: note.fm.shelf, redo: note.fm.redo };
+    const newPath = `${shelf}/${note.slug}.md`;
+    note.path = newPath; note.folder = shelf; delete note.fm.shelf; delete note.fm.redo;
+    saveCorpusCache(); renderAll();
+    toast(`❧ ${note.slug} → ${shelf}`);
+    enqueueVeto(`promote ${note.slug}`,
+      () => promoteRemote(prev.path, newPath, note.slug, shelf),
+      () => { note.path = prev.path; note.folder = 'bandeja';
+              if (prev.shelf !== undefined) note.fm.shelf = prev.shelf;
+              if (prev.redo !== undefined) note.fm.redo = prev.redo;
+              saveCorpusCache(); });
+  } else if (kind === 'redo') {
+    const hint = await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
+    if (!hint) return;
+    const prev = note.fm.redo;
+    const clean = hint.replace(/\s+/g, ' ').trim();
+    note.fm.redo = clean;
+    saveCorpusCache(); renderAll();
+    toast('marcada — el archivero la rehace esta noche.');
+    enqueueVeto(`redo ${note.slug}`,
+      () => redoRemote(note.path, note.slug, clean),
+      () => { if (prev === undefined) delete note.fm.redo; else note.fm.redo = prev; saveCorpusCache(); });
+  } else if (kind === 'reject') {
+    if (!confirm(`Rechazar “${note.fm.title || note.slug}” — la tarjeta sale del catálogo. El texto queda en los stacks y git recuerda la ficha. ¿Seguro?`)) return;
+    const idx = corpus.notes.indexOf(note);
+    corpus.notes.splice(idx, 1);
+    saveCorpusCache(); renderAll();
+    toast('ficha rechazada.');
+    enqueueVeto(`reject ${note.slug}`,
+      () => rejectRemote(note.path, note.slug),
+      () => { corpus.notes.splice(Math.min(idx, corpus.notes.length), 0, note); saveCorpusCache(); });
+  }
 }
 
 document.addEventListener('keydown', e => {
