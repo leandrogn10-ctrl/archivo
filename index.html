@@ -1337,9 +1337,14 @@ function wireOpeners(root) {
   }));
 }
 
+const CORPUS_STALE_MS = 30 * 60 * 1000;   // auto-refresh the bodega when the cache is older than 30 min
 function initArchivo() {
   corpus = loadCorpusCache();
   if (corpus && !corpus.notes) corpus = null;   // stale/foreign cache shape → refetch
+  // boot from cache instantly, then re-pull in the background if stale (needs the PAT)
+  if (state.settings.sync.githubPat && (!corpus || (Date.now() - (corpus.fetchedAt || 0)) > CORPUS_STALE_MS)) {
+    setTimeout(() => { pullCorpus().catch(e => console.warn('auto-pull', e)); }, 400);
+  }
 }
 
 /* ── boot (shell verbatim) ── */
