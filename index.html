@@ -1230,9 +1230,19 @@ window.addEventListener('beforeunload', e => {
   if (deskPending > 0) { e.preventDefault(); e.returnValue = ''; }   // verdicts still flushing
 });
 
+/* verdicts must be idempotent against local/remote drift: a stale card (verdict already
+   executed in another tab/session, or a reload mid-flight on the old sync build) retries
+   the same verdict — recognize the already-done state as success, not failure. */
 async function promoteRemote(oldPath, newPath, slug, shelf) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const j = await ghGet(`/repos/${repo}/contents/${oldPath}?ref=${encodeURIComponent(branch)}`);
+  let j = null;
+  try { j = await ghGet(`/repos/${repo}/contents/${oldPath}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) { if (!String(e.message).startsWith('404')) throw e; }
+  if (!j) {
+    // bandeja copy already gone — success iff the ficha already lives at the destination
+    try { await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); return; }
+    catch (e) { throw new Error(`la ficha no está ni en la bandeja ni en ${shelf} — pulsa ⟳ para re-sincronizar`); }
+  }
   // the clerk's shelf suggestion (and any pending redo) is consumed on the way out of the bandeja
   const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo']);
   let dest = null;
@@ -1246,13 +1256,21 @@ async function promoteRemote(oldPath, newPath, slug, shelf) {
 
 async function rejectRemote(path, slug) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`);
+  let j = null;
+  try { j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) { if (!String(e.message).startsWith('404')) throw e; return; }   // already gone = already rejected
   await ghWrite('DELETE', path, { message: `veto: reject ${slug}`, sha: j.sha });
 }
 
 async function redoRemote(path, slug, clean) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
-  const j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`);
+  let j;
+  try { j = await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) {
+    throw String(e.message).startsWith('404')
+      ? new Error('la ficha ya no está donde el catálogo cree — pulsa ⟳ para re-sincronizar')
+      : e;
+  }
   let content = b64ToUtf8(j.content);
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) throw new Error('la ficha no tiene frontmatter');
