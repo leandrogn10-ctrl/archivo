@@ -12,7 +12,9 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   requires `s.corpus.repo`.
 - **The corpus cache lives in its OWN localStorage key (`archivo.corpus.v1`), never inside
   `state`** — note content must never reach the app-state gist. Don't "simplify" this.
-- This app **reads**; writing notes is the sweep's job (Phase B) or git directly. Keep it that way.
+- This app **reads** — with ONE exception: **veto-pass micro-writes** (`setSensitivity`-style
+  human verdicts: single frontmatter fields, contents-API PUT, sha-guarded, commit message
+  `veto: …`). The app never generates or edits note *content*; that's the sweep's job or git.
 
 ## Identity — Archivo General de la Nación
 Verde archivo + manila ink, **sello rojo** accent (#c8553d), brass gold. Themes: `archivo`
