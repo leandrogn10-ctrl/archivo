@@ -472,6 +472,8 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .desk-actions button:hover { border-color: var(--accent-soft); color: var(--ink); }
 .desk-actions button.dk-x { flex: 0 0 44px; }
 .desk-actions button.dk-x:hover { border-color: var(--danger); color: var(--danger); }
+.desk-actions button.dk-agree { color: var(--gold); border-color: var(--gold); }
+.desk-actions button.dk-agree:hover { background: var(--gold); color: var(--bg); border-color: var(--gold); }
 
 /* the folio — note reader */
 .folio { max-width: 720px; animation: fadeUp 0.35s cubic-bezier(0.2,0.8,0.2,1); }
@@ -1237,7 +1239,7 @@ window.addEventListener('beforeunload', e => {
 /* verdicts must be idempotent against local/remote drift: a stale card (verdict already
    executed in another tab/session, or a reload mid-flight on the old sync build) retries
    the same verdict — recognize the already-done state as success, not failure. */
-async function promoteRemote(oldPath, newPath, slug, shelf) {
+async function promoteRemote(oldPath, newPath, slug, shelf, typeFix) {
   const repo = state.corpus.repo, branch = state.corpus.branch;
   let j = null;
   try { j = await ghGet(`/repos/${repo}/contents/${oldPath}?ref=${encodeURIComponent(branch)}`); }
@@ -1248,7 +1250,14 @@ async function promoteRemote(oldPath, newPath, slug, shelf) {
     catch (e) { throw new Error(`la ficha no está ni en la bandeja ni en ${shelf} — pulsa ⟳ para re-sincronizar`); }
   }
   // the clerk's shelf suggestion (and any pending redo / revisor verdict) is consumed on the way out
-  const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo', 'revisor', 'revisor_nota']);
+  let content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo', 'revisor', 'revisor_nota', 'revisor_accion', 'revisor_shelf', 'revisor_type']);
+  if (typeFix) {
+    const m2 = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (m2) {
+      const fm2 = /^type:/m.test(m2[1]) ? m2[1].replace(/^type:.*$/m, `type: ${typeFix}`) : m2[1] + `\ntype: ${typeFix}`;
+      content = content.slice(0, m2.index) + `---\n${fm2}\n---` + content.slice(m2.index + m2[0].length);
+    }
+  }
   let dest = null;
   try { dest = await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); }
   catch (e) { if (!String(e.message).startsWith('404')) throw e; }
@@ -1314,28 +1323,39 @@ function deskSelect(idx) {
   if (el) { el.classList.add('desk-sel'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
-async function deskVerdict(kind, note) {
+async function deskVerdict(kind, note, opts = {}) {
   if (!note) return;
+  if (kind === 'agree') {
+    // acatar: execute whatever el Revisor suggested for this held ficha
+    const acc = String(note.fm.revisor_accion || 'promover');
+    if (acc === 'rechazar') return deskVerdict('reject', note);
+    if (acc === 'redo') return deskVerdict('redo', note, {
+      hint: 'el revisor observa: ' + String(note.fm.revisor_nota || 'la ficha no representa fielmente el documento'),
+    });
+    return deskVerdict('promote', note, {
+      shelf: SHELVES.includes(note.fm.revisor_shelf) ? String(note.fm.revisor_shelf) : undefined,
+      typeFix: note.fm.revisor_type ? String(note.fm.revisor_type) : undefined,
+    });
+  }
   if (kind === 'promote' || kind === 'shelf') {
-    let shelf = String(note.fm.shelf || '');
+    let shelf = String(opts.shelf || note.fm.shelf || '');
     if (kind === 'shelf' || !SHELVES.includes(shelf)) {
       shelf = String(await askPrompt('promover a…', SHELVES.join(' · '), SHELVES.includes(shelf) ? shelf : 'notas') || '').trim().toLowerCase();
       if (!shelf) return;
       if (!SHELVES.includes(shelf)) { toast(`“${shelf}” no es un estante.`, true); return; }
     }
-    const prev = { path: note.path, folder: note.folder, shelf: note.fm.shelf, redo: note.fm.redo };
+    const prev = { path: note.path, folder: note.folder, fm: { ...note.fm } };
     const newPath = `${shelf}/${note.slug}.md`;
-    note.path = newPath; note.folder = shelf; delete note.fm.shelf; delete note.fm.redo;
+    note.path = newPath; note.folder = shelf;
+    if (opts.typeFix) note.fm.type = opts.typeFix;
+    ['shelf', 'redo', 'revisor', 'revisor_nota', 'revisor_accion', 'revisor_shelf', 'revisor_type'].forEach(k => delete note.fm[k]);
     saveCorpusCache(); renderAll();
     toast(`❧ ${note.slug} → ${shelf}`);
     enqueueVeto(`promote ${note.slug}`,
-      () => promoteRemote(prev.path, newPath, note.slug, shelf),
-      () => { note.path = prev.path; note.folder = 'bandeja';
-              if (prev.shelf !== undefined) note.fm.shelf = prev.shelf;
-              if (prev.redo !== undefined) note.fm.redo = prev.redo;
-              saveCorpusCache(); });
+      () => promoteRemote(prev.path, newPath, note.slug, shelf, opts.typeFix),
+      () => { note.path = prev.path; note.folder = 'bandeja'; note.fm = prev.fm; saveCorpusCache(); });
   } else if (kind === 'redo') {
-    const hint = await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
+    const hint = opts.hint || await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
     if (!hint) return;
     const prev = note.fm.redo;
     const clean = hint.replace(/\s+/g, ' ').trim();
@@ -1379,6 +1399,7 @@ document.addEventListener('keydown', e => {
     s: () => deskVerdict('shelf', n),
     r: () => deskVerdict('redo', n),
     e: () => deskVerdict('ajeno', n),
+    a: () => n && n.fm.revisor ? deskVerdict('agree', n) : toast('esta ficha aún no tiene veredicto del revisor.'),
     x: () => deskVerdict('reject', n),
     Enter: () => { if (n) { view = { mode: 'note', drawer: 'bandeja', slug: n.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 }); } },
   }[e.key];
@@ -1525,6 +1546,7 @@ function cardHtml(n, q, deskIdx = -1) {
     ${desk && n.fm.revisor_nota ? `<div class="revisor-note${n.fm.revisor === 'rechazar' ? ' rej' : ''}">⚖ revisor${n.fm.revisor ? ` [${escapeHtml(String(n.fm.revisor))}]` : ''}: ${escapeHtml(String(n.fm.revisor_nota))}</div>` : ''}
     <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${foot}</span></div>
     ${desk ? `<div class="desk-actions">
+      ${n.fm.revisor ? `<button class="dk-agree" data-verdict="agree" title="acatar la sugerencia del revisor (a)">⚖ acatar</button>` : ''}
       <button data-verdict="promote" title="promover al estante sugerido (p)">✓ promover</button>
       <button data-verdict="shelf" title="elegir otro estante (s)">✎ estante</button>
       <button data-verdict="redo" title="re-destilar con contexto humano (r)">↺ redo</button>
@@ -1541,7 +1563,7 @@ function deskBarHtml(notes) {
   const flowed = corpus.notes.filter(n => String(n.fm.revisado || '').endsWith(today)).length;
   return `<div class="desk-bar"><span class="desk-title">mesa de veto</span>
     <span>${notes.length} pendiente${notes.length === 1 ? '' : 's'}${privs ? ` · ${privs} 🔒 lee despacio` : ''}${redos ? ` · ${redos} ↺ esperando al archivero` : ''}${flowed ? ` · ⚖ revisor promovió ${flowed} hoy` : ''}</span>
-    <span class="desk-keys"><kbd>j</kbd><kbd>k</kbd> elegir · <kbd>p</kbd> promover · <kbd>s</kbd> estante · <kbd>r</kbd> redo · <kbd>e</kbd> ajeno · <kbd>x</kbd> rechazar · <kbd>↵</kbd> abrir</span></div>`;
+    <span class="desk-keys"><kbd>a</kbd> acatar · <kbd>j</kbd><kbd>k</kbd> elegir · <kbd>p</kbd> promover · <kbd>s</kbd> estante · <kbd>r</kbd> redo · <kbd>e</kbd> ajeno · <kbd>x</kbd> rechazar · <kbd>↵</kbd> abrir</span></div>`;
 }
 
 function wireDesk(root) {
