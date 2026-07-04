@@ -461,6 +461,8 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .card.desk-sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
 .shelf-hint { font-family: 'JetBrains Mono', monospace; color: var(--c-dusty-fg); }
 .redo-flag { font-family: 'Special Elite', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); border: 1px dashed var(--gold); border-radius: 2px; padding: 0 5px; }
+.revisor-note { font-size: 10.5px; font-style: italic; color: var(--gold); line-height: 1.5; border-top: 1px dashed var(--line); padding-top: 5px; }
+.revisor-note.rej { color: var(--danger); }
 .desk-actions { display: flex; gap: 6px; margin-top: 2px; }
 .desk-actions button {
   flex: 1; background: var(--bg-elev); border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
@@ -1245,8 +1247,8 @@ async function promoteRemote(oldPath, newPath, slug, shelf) {
     try { await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); return; }
     catch (e) { throw new Error(`la ficha no está ni en la bandeja ni en ${shelf} — pulsa ⟳ para re-sincronizar`); }
   }
-  // the clerk's shelf suggestion (and any pending redo) is consumed on the way out of the bandeja
-  const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo']);
+  // the clerk's shelf suggestion (and any pending redo / revisor verdict) is consumed on the way out
+  const content = stripFmLines(b64ToUtf8(j.content), ['shelf', 'redo', 'revisor', 'revisor_nota']);
   let dest = null;
   try { dest = await ghGet(`/repos/${repo}/contents/${newPath}?ref=${encodeURIComponent(branch)}`); }
   catch (e) { if (!String(e.message).startsWith('404')) throw e; }
@@ -1520,6 +1522,7 @@ function cardHtml(n, q, deskIdx = -1) {
   return `<div class="card${desk && deskIdx === deskSel ? ' desk-sel' : ''}" data-open="${escapeHtml(n.slug)}"${desk ? ` data-idx="${deskIdx}"` : ''}>
     <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair">${ajeno}<span class="stamp ${stampCls}">${escapeHtml(TYPE_ES[type] || type)}</span></span></div>
     <div class="excerpt">${escapeHtml(excerptOf(n, q))}</div>
+    ${desk && n.fm.revisor_nota ? `<div class="revisor-note${n.fm.revisor === 'rechazar' ? ' rej' : ''}">⚖ revisor${n.fm.revisor ? ` [${escapeHtml(String(n.fm.revisor))}]` : ''}: ${escapeHtml(String(n.fm.revisor_nota))}</div>` : ''}
     <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${foot}</span></div>
     ${desk ? `<div class="desk-actions">
       <button data-verdict="promote" title="promover al estante sugerido (p)">✓ promover</button>
@@ -1534,8 +1537,10 @@ function cardHtml(n, q, deskIdx = -1) {
 function deskBarHtml(notes) {
   const privs = notes.filter(n => n.fm.sensitivity === 'private').length;
   const redos = notes.filter(n => n.fm.redo).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const flowed = corpus.notes.filter(n => String(n.fm.revisado || '').endsWith(today)).length;
   return `<div class="desk-bar"><span class="desk-title">mesa de veto</span>
-    <span>${notes.length} pendiente${notes.length === 1 ? '' : 's'}${privs ? ` · ${privs} 🔒 lee despacio` : ''}${redos ? ` · ${redos} ↺ esperando al archivero` : ''}</span>
+    <span>${notes.length} pendiente${notes.length === 1 ? '' : 's'}${privs ? ` · ${privs} 🔒 lee despacio` : ''}${redos ? ` · ${redos} ↺ esperando al archivero` : ''}${flowed ? ` · ⚖ revisor promovió ${flowed} hoy` : ''}</span>
     <span class="desk-keys"><kbd>j</kbd><kbd>k</kbd> elegir · <kbd>p</kbd> promover · <kbd>s</kbd> estante · <kbd>r</kbd> redo · <kbd>e</kbd> ajeno · <kbd>x</kbd> rechazar · <kbd>↵</kbd> abrir</span></div>`;
 }
 
