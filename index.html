@@ -1327,7 +1327,7 @@ async function deskVerdict(kind, note, opts = {}) {
   if (!note) return;
   if (kind === 'agree') {
     // acatar: execute whatever el Revisor suggested for this held ficha
-    const acc = String(note.fm.revisor_accion || 'promover');
+    const acc = String(note.fm.revisor_accion || (note.fm.revisor === 'rechazar' ? 'rechazar' : 'promover'));
     if (acc === 'rechazar') return deskVerdict('reject', note);
     if (acc === 'redo') return deskVerdict('redo', note, {
       hint: 'el revisor observa: ' + String(note.fm.revisor_nota || 'la ficha no representa fielmente el documento'),
