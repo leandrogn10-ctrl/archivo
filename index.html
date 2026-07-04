@@ -1131,12 +1131,22 @@ async function pullCorpus() {
     const tree = await ghGet(`/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
     const files = (tree.tree || []).filter(f => f.type === 'blob' && f.path.endsWith('.md') && f.path !== 'README.md'
       && !f.path.startsWith('textos/'));   // the stacks: full-doc snapshots, not fichas — linked from the plate, never drawers
-    const notes = [];
-    for (let i = 0; i < files.length; i += 6) {
-      const batch = files.slice(i, i + 6);
+    // incremental: the tree gives each blob's sha — keep cached notes that match, fetch only the delta
+    const prev = new Map((corpus?.notes || []).filter(n => n.sha).map(n => [n.path, n]));
+    const notes = [], toFetch = [];
+    for (const f of files) {
+      const old = prev.get(f.path);
+      if (old && old.sha === f.sha) notes.push(old);
+      else toFetch.push(f);
+    }
+    for (let i = 0; i < toFetch.length; i += 12) {
+      btn.textContent = `${Math.min(i + 12, toFetch.length)}/${toFetch.length}`;
+      const batch = toFetch.slice(i, i + 12);
       const got = await Promise.all(batch.map(async f => {
         const j = await ghGet(`/repos/${repo}/contents/${f.path}?ref=${encodeURIComponent(branch)}`);
-        return parseNote(f.path, b64ToUtf8(j.content));
+        const n = parseNote(f.path, b64ToUtf8(j.content));
+        n.sha = f.sha;
+        return n;
       }));
       notes.push(...got);
     }
@@ -1146,7 +1156,7 @@ async function pullCorpus() {
     catch (e) { console.warn('corpus cache write failed (quota?) — reading room still works this session', e); toast('corpus too big for the local cache — kept in memory only.', true); }
     state.corpus.lastPulledAt = Date.now(); save();
     renderAll();
-    toast(`la bodega: ${notes.length} fichas.`);
+    toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
   } catch (e) {
     console.error('corpus pull', e);
     toast('pull de la bodega falló: ' + e.message, true);
