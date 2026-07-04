@@ -1434,16 +1434,17 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos' };
+const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos', personas: 'Personas (La Red)' };
 const TYPE_STAMP = {
   course: 'st-curso', concept: 'st-concepto', claim: 'st-claim', source: 'st-concepto',
   'debate-case': 'st-caso', craft: 'st-oficio', creative: 'st-creativo', project: 'st-concepto',
-  milestone: 'st-claim', flow: 'st-caso', coaching: 'st-oficio', fragment: 'st-otro'
+  milestone: 'st-claim', flow: 'st-caso', coaching: 'st-oficio', fragment: 'st-otro',
+  persona: 'st-concepto'
 };
 const TYPE_ES = {
   course: 'curso', concept: 'concepto', claim: 'claim', source: 'fuente', 'debate-case': 'caso',
   craft: 'oficio', creative: 'creativo', project: 'proyecto', milestone: 'hito', flow: 'flow',
-  coaching: 'coaching', fragment: 'fragmento'
+  coaching: 'coaching', fragment: 'fragmento', persona: 'persona'
 };
 
 function notesFor(drawer) {
