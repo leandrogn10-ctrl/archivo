@@ -1551,6 +1551,11 @@ document.addEventListener('keydown', e => {
 
 /* ── views ── */
 function excerptOf(n, q) {
+  if (n.fm.type === 'persona' && !q) {
+    // an expediente's card shows the person's LATEST observation, not a shared preamble
+    const bullets = n.body.split(/\r?\n/).filter(l => l.startsWith('- '));
+    if (bullets.length) return bullets[bullets.length - 1].replace(/^- /, '').replace(/\(\[doc\].*$/, '').replace(/[*`\[\]]/g, '').trim().slice(0, 170);
+  }
   const flat = n.body.replace(/^---[\s\S]*?---/, '').replace(/[#>*`\[\]]/g, '').replace(/\s+/g, ' ').trim();
   if (q) {
     const i = flat.toLowerCase().indexOf(q.toLowerCase());
