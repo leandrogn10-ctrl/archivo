@@ -456,6 +456,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
   font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--ink-dim);
 }
 .desk-bar .desk-title { font-family: 'Special Elite', monospace; text-transform: uppercase; letter-spacing: 0.18em; color: var(--accent); }
+.turno-chip { color: var(--c-sage-fg); border: 1px dashed var(--c-sage-bd); border-radius: 3px; padding: 1px 8px; white-space: nowrap; }
 .desk-bar kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--ink); font-size: 10px; font-family: inherit; }
 @media (max-width: 880px) { .desk-keys { display: none; } }
 .card.desk-sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
@@ -1151,7 +1152,12 @@ async function pullCorpus() {
       notes.push(...got);
     }
     notes.sort((a, b) => String(b.fm.date || '').localeCompare(String(a.fm.date || '')));
-    corpus = { fetchedAt: Date.now(), notes };
+    let turno = null;   // the archivero's heartbeat — absent until its first post-heartbeat run
+    try {
+      const t = await ghGet(`/repos/${repo}/contents/turno.json?ref=${encodeURIComponent(branch)}`);
+      turno = JSON.parse(b64ToUtf8(t.content));
+    } catch (e) {}
+    corpus = { fetchedAt: Date.now(), notes, turno };
     try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); }
     catch (e) { console.warn('corpus cache write failed (quota?) — reading room still works this session', e); toast('corpus too big for the local cache — kept in memory only.', true); }
     state.corpus.lastPulledAt = Date.now(); save();
@@ -1575,13 +1581,28 @@ function cardHtml(n, q, deskIdx = -1) {
   </div>`;
 }
 
+function turnoChipText() {
+  const t = corpus && corpus.turno;
+  if (!t || !t.next_start_eta) return '';
+  const mins = Math.round((t.next_start_eta * 1000 - Date.now()) / 60000);
+  if (mins > 0) return `⏱ el archivero vuelve en ~${mins} min`;
+  if (mins > -90) return `⚙ el archivero está en su turno — ⟳ al rato`;
+  return '';   // heartbeat stale (shift apagado / tapa cerrada) — no false promises
+}
+setInterval(() => {
+  const chip = document.getElementById('turno-chip');
+  if (chip) { const txt = turnoChipText(); chip.textContent = txt; chip.style.display = txt ? '' : 'none'; }
+}, 30000);
+
 function deskBarHtml(notes) {
   const privs = notes.filter(n => n.fm.sensitivity === 'private').length;
   const redos = notes.filter(n => n.fm.redo).length;
   const today = new Date().toISOString().slice(0, 10);
   const flowed = corpus.notes.filter(n => String(n.fm.revisado || '').endsWith(today)).length;
+  const turno = turnoChipText();
   return `<div class="desk-bar"><span class="desk-title">mesa de veto</span>
     <span>${notes.length} pendiente${notes.length === 1 ? '' : 's'}${privs ? ` · ${privs} 🔒 lee despacio` : ''}${redos ? ` · ${redos} ↺ esperando al archivero` : ''}${flowed ? ` · ⚖ revisor promovió ${flowed} hoy` : ''}</span>
+    <span id="turno-chip" class="turno-chip"${turno ? '' : ' style="display:none"'}>${escapeHtml(turno)}</span>
     <span class="desk-keys"><kbd>a</kbd> acatar · <kbd>j</kbd><kbd>k</kbd> elegir · <kbd>p</kbd> promover · <kbd>s</kbd> estante · <kbd>r</kbd> redo · <kbd>e</kbd> ajeno · <kbd>x</kbd> rechazar · <kbd>↵</kbd> abrir</span></div>`;
 }
 
