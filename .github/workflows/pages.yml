@@ -1,0 +1,28 @@
+# Deploys the reading room to GitHub Pages on every push to main.
+# Replaced the legacy Jekyll pipeline Jul 4 2026 — it stalled/errored twice in one
+# afternoon (builds stuck in "building" for an hour); this is ~30s and logged.
+name: deploy-pages
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4
