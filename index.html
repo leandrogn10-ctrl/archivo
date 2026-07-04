@@ -1627,10 +1627,22 @@ function renderView() {
     ).join('') + `</div>`;
   } else {
     const desk = !q && view.drawer === 'bandeja';
-    deskNotes = desk ? notes : [];
-    if (desk) deskSel = Math.max(0, Math.min(deskSel, notes.length - 1));
-    root.innerHTML = `<div class="cards">${desk ? deskBarHtml(notes) : ''}${notes.map((n, i) => cardHtml(n, q, desk ? i : -1)).join('')}</div>`;
-    if (desk) wireDesk(root);
+    if (desk) {
+      // the doubt inbox floats: revisor-held fichas first, raw unreviewed below
+      const held = notes.filter(n => n.fm.revisor), fresh = notes.filter(n => !n.fm.revisor);
+      deskNotes = [...held, ...fresh];
+      deskSel = Math.max(0, Math.min(deskSel, deskNotes.length - 1));
+      root.innerHTML = `<div class="cards">${deskBarHtml(deskNotes)}`
+        + (held.length ? `<div class="group-label">en duda — el revisor te espera (${held.length})</div>` : '')
+        + held.map((n, i) => cardHtml(n, q, i)).join('')
+        + (held.length && fresh.length ? `<div class="group-label">sin revisar (${fresh.length})</div>` : '')
+        + fresh.map((n, i) => cardHtml(n, q, held.length + i)).join('')
+        + `</div>`;
+      wireDesk(root);
+    } else {
+      deskNotes = [];
+      root.innerHTML = `<div class="cards">${notes.map(n => cardHtml(n, q)).join('')}</div>`;
+    }
   }
   wireOpeners(root);
 }
