@@ -460,6 +460,8 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .desk-bar kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--ink); font-size: 10px; font-family: inherit; }
 @media (max-width: 880px) { .desk-keys { display: none; } }
 .card.desk-sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+.card.espera { opacity: 0.5; filter: saturate(0.5); transition: opacity 0.15s; }
+.card.espera:hover { opacity: 0.85; }
 .shelf-hint { font-family: 'JetBrains Mono', monospace; color: var(--c-dusty-fg); }
 .redo-flag { font-family: 'Special Elite', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); border: 1px dashed var(--gold); border-radius: 2px; padding: 0 5px; }
 .revisor-note { font-size: 10.5px; font-style: italic; color: var(--gold); line-height: 1.5; border-top: 1px dashed var(--line); padding-top: 5px; }
@@ -1386,7 +1388,7 @@ async function deskVerdict(kind, note, opts = {}) {
     const clean = hint.replace(/\s+/g, ' ').trim();
     note.fm.redo = clean;
     saveCorpusCache(); renderAll();
-    toast('marcada — el archivero la rehace esta noche.');
+    toast('↺ acatada — el archivero la rehace en su próximo turno.');
     enqueueVeto(`redo ${note.slug}`,
       () => redoRemote(note.path, note.slug, clean),
       () => { if (prev === undefined) delete note.fm.redo; else note.fm.redo = prev; saveCorpusCache(); });
@@ -1565,7 +1567,7 @@ function cardHtml(n, q, deskIdx = -1) {
     ? `${n.fm.redo ? `<span class="redo-flag" title="${escapeHtml(String(n.fm.redo))}">↺ redo</span> ` : ''}${priv} <span class="shelf-hint">→ ${escapeHtml(SHELVES.includes(n.fm.shelf) ? String(n.fm.shelf) : '¿estante?')}</span>`
     : `${priv} ${escapeHtml(n.folder)}`;
   const ajeno = n.fm.provenance === 'external' ? '<span class="stamp st-ajeno" title="de otra pluma — nunca cuenta como pensamiento de Leandro">ajeno</span>' : '';
-  return `<div class="card${desk && deskIdx === deskSel ? ' desk-sel' : ''}" data-open="${escapeHtml(n.slug)}"${desk ? ` data-idx="${deskIdx}"` : ''}>
+  return `<div class="card${desk && deskIdx === deskSel ? ' desk-sel' : ''}${desk && n.fm.redo ? ' espera' : ''}" data-open="${escapeHtml(n.slug)}"${desk ? ` data-idx="${deskIdx}"` : ''}>
     <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair">${ajeno}<span class="stamp ${stampCls}">${escapeHtml(TYPE_ES[type] || type)}</span></span></div>
     <div class="excerpt">${escapeHtml(excerptOf(n, q))}</div>
     ${desk && n.fm.revisor_nota ? `<div class="revisor-note${n.fm.revisor === 'rechazar' ? ' rej' : ''}">⚖ revisor${n.fm.revisor ? ` [${escapeHtml(String(n.fm.revisor))}]` : ''}: ${escapeHtml(String(n.fm.revisor_nota))}</div>` : ''}
@@ -1690,15 +1692,21 @@ function renderView() {
   } else {
     const desk = !q && view.drawer === 'bandeja';
     if (desk) {
-      // the doubt inbox floats: revisor-held fichas first, raw unreviewed below
-      const held = notes.filter(n => n.fm.revisor), fresh = notes.filter(n => !n.fm.revisor);
-      deskNotes = [...held, ...fresh];
+      // the doubt inbox floats: revisor-held fichas first, raw unreviewed below, and
+      // verdicts already given (redo pending) sink to the bottom, dimmed — done from
+      // Leandro's side, waiting on the archivero
+      const espera = notes.filter(n => n.fm.redo);
+      const held = notes.filter(n => !n.fm.redo && n.fm.revisor);
+      const fresh = notes.filter(n => !n.fm.redo && !n.fm.revisor);
+      deskNotes = [...held, ...fresh, ...espera];
       deskSel = Math.max(0, Math.min(deskSel, deskNotes.length - 1));
       root.innerHTML = `<div class="cards">${deskBarHtml(deskNotes)}`
         + (held.length ? `<div class="group-label">en duda — el revisor te espera (${held.length})</div>` : '')
         + held.map((n, i) => cardHtml(n, q, i)).join('')
-        + (held.length && fresh.length ? `<div class="group-label">sin revisar (${fresh.length})</div>` : '')
+        + (fresh.length && (held.length || espera.length) ? `<div class="group-label">sin revisar (${fresh.length})</div>` : '')
         + fresh.map((n, i) => cardHtml(n, q, held.length + i)).join('')
+        + (espera.length ? `<div class="group-label">↺ esperando al archivero (${espera.length}) — ya diste tu verdicto</div>` : '')
+        + espera.map((n, i) => cardHtml(n, q, held.length + fresh.length + i)).join('')
         + `</div>`;
       wireDesk(root);
     } else {
