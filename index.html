@@ -473,6 +473,13 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .expediente { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--gold); background: color-mix(in srgb, var(--gold) 6%, transparent); }
 .expediente h4 { font-family: 'Special Elite', monospace; font-size: 11px; letter-spacing: .08em; color: var(--gold); margin: 0 0 6px; }
 .expediente .folio-body { font-size: 13px; }
+.hallazgo-fichas { display: flex; flex-direction: column; gap: 8px; }
+.hallazgo-ficha { padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--ink-faint); background: var(--bg-elev); }
+.hf-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.hf-head b { font-family: 'Libre Caslon Text', serif; font-size: 13.5px; }
+.hf-path { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-faint); }
+.hf-body { font-size: 12.5px; line-height: 1.55; color: var(--ink-dim); white-space: pre-wrap; }
+.hallazgo-fichas.missing { padding: 8px 10px; border: 1px dashed var(--danger); color: var(--danger); font-size: 12px; }
 .desk-actions { display: flex; gap: 6px; margin-top: 2px; }
 .desk-actions button {
   flex: 1; background: var(--bg-elev); border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
@@ -1957,16 +1964,39 @@ function salaBarHtml(notes) {
     <span class="desk-keys"><kbd>a</kbd> aceptar · <kbd>A</kbd> toda la clase · <kbd>x</kbd> desestimar · <kbd>c</kbd> contexto · <kbd>e</kbd> al expediente · <kbd>j</kbd><kbd>k</kbd> elegir · <kbd>↵</kbd> abrir</span></div>`;
 }
 
+function salaTargetFichas(n) {
+  // resolve every ficha this finding is actually ABOUT, so the desk shows evidence, not
+  // just the auditor's claim about it. target_path covers the single-target remedios
+  // (reshelve/redo); near-dup findings quote BOTH paths as `folder/slug.md` in the body.
+  const paths = new Set();
+  if (n.fm.target_path) paths.add(String(n.fm.target_path));
+  for (const m of String(n.body).matchAll(/`([\w./-]+\.md)`/g)) paths.add(m[1]);
+  let fichas = [...paths].map(p => corpus.notes.find(o => o.path === p)).filter(Boolean);
+  if (!fichas.length && n.fm.target) {
+    const bySlug = corpus.notes.find(o => o.slug === String(n.fm.target) && o.folder !== 'auditoria');
+    if (bySlug) fichas.push(bySlug);
+  }
+  return fichas;
+}
+
 function salaCardHtml(n, deskIdx) {
   const sev = String(n.fm.severity || 'S2');
   const rec = n.fm.status === 'recontexto';
   const remedio = String(n.fm.remedio || 'nota');
   const remedioTxt = remedio === 'reshelve' ? `mover <b>${escapeHtml(String(n.fm.target || '?'))}</b> → <b>${escapeHtml(String(n.fm.remedio_arg || '?'))}</b>`
     : remedio === 'redo' ? `redo sobre <b>${escapeHtml(String(n.fm.target || '?'))}</b>` : 'informativo — aceptar lo archiva';
+  const fichas = salaTargetFichas(n);
+  const evidencia = fichas.length
+    ? `<div class="hallazgo-fichas">${fichas.map(f => `<div class="hallazgo-ficha">
+          <div class="hf-head"><b>${escapeHtml(f.fm.title || f.slug)}</b><span class="hf-path">${escapeHtml(f.path)}</span><a data-open="${escapeHtml(f.slug)}">abrir folio ↗</a></div>
+          <div class="hf-body">${escapeHtml(f.body.slice(0, 400))}${f.body.length > 400 ? '…' : ''}</div>
+        </div>`).join('')}</div>`
+    : `<div class="hallazgo-fichas missing">⚠ no encuentro la(s) ficha(s) referida(s) en la bodega cargada — pulsa ⟳ para re-sincronizar.</div>`;
   return `<div class="card${deskIdx === deskSel ? ' desk-sel' : ''}${rec ? ' espera' : ''}" data-open="${escapeHtml(n.slug)}" data-idx="${deskIdx}">
     <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair"><span class="sev-chip sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span><span class="stamp st-otro">${escapeHtml(String(n.fm.kind || 'hallazgo'))}</span></span></div>
     <div class="excerpt">${escapeHtml(n.body.slice(0, 220))}</div>
-    <div class="sala-remedio">❧ remedio: ${remedioTxt}${n.fm.target ? ` · <a data-open="${escapeHtml(String(n.fm.target))}">ver ficha ↗</a>` : ''}</div>
+    <div class="sala-remedio">❧ remedio: ${remedioTxt}</div>
+    ${evidencia}
     ${rec ? `<div class="revisor-note">↺ re-juicio pendiente — tu contexto: ${escapeHtml(String(n.fm.contexto_hint || ''))}</div>` : ''}
     <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${escapeHtml(String(n.fm.target || ''))}</span></div>
     ${rec ? '' : `<div class="desk-actions">
