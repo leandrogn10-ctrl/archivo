@@ -1085,11 +1085,53 @@ let view = { mode: 'list', drawer: 'todo', slug: null, q: '' };
    fichas. Structured clone, no JSON round-trip. Same discipline: never inside `state`. */
 function corpusDb() {
   return new Promise((res, rej) => {
-    const req = indexedDB.open('archivo-corpus-cache', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    const req = indexedDB.open('archivo-corpus-cache', 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      // vetoq: durable desk-verdict queue — see enqueueVeto. A verdict mutates the local
+      // cache optimistically and used to queue its GitHub write in memory only; a reload
+      // or tab close before the queue drained lost the write silently while the optimistic
+      // "already verdicted" card kept showing (IDB cache persists across reloads, the queue
+      // didn't) — the desk would re-show the identical card as done, forever out of sync
+      // with origin. Persisting each queued op here lets boot replay whatever didn't flush.
+      if (!db.objectStoreNames.contains('vetoq')) db.createObjectStore('vetoq', { keyPath: 'id', autoIncrement: true });
+    };
     req.onsuccess = () => res(req.result);
     req.onerror = () => rej(req.error);
   });
+}
+async function idbQueueAll() {
+  const db = await corpusDb();
+  try {
+    return await new Promise((res, rej) => {
+      const out = [];
+      const rq = db.transaction('vetoq').objectStore('vetoq').openCursor();
+      rq.onsuccess = () => { const c = rq.result; if (c) { out.push(c.value); c.continue(); } else res(out); };
+      rq.onerror = () => rej(rq.error);
+    });
+  } finally { db.close(); }
+}
+async function idbQueueAdd(rec) {
+  const db = await corpusDb();
+  try {
+    return await new Promise((res, rej) => {
+      const tx = db.transaction('vetoq', 'readwrite');
+      const rq = tx.objectStore('vetoq').add(rec);
+      rq.onsuccess = () => res(rq.result);
+      rq.onerror = () => rej(rq.error);
+    });
+  } finally { db.close(); }
+}
+async function idbQueueDel(id) {
+  const db = await corpusDb();
+  try {
+    await new Promise((res, rej) => {
+      const tx = db.transaction('vetoq', 'readwrite');
+      tx.objectStore('vetoq').delete(id);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  } finally { db.close(); }
 }
 async function idbCorpusGet() {
   const db = await corpusDb();
@@ -1273,13 +1315,38 @@ function stripFmLines(content, keys) {
 
 /* verdicts are OPTIMISTIC: the local corpus mutates and re-renders instantly, and the
    GitHub writes drain through a serial background queue (parallel contents-API commits
-   race on the branch head). A failed write reverts its ficha, re-renders, and reports. */
+   race on the branch head). A failed write reverts its ficha, re-renders, and reports.
+   The queue is durable (vetoq in IndexedDB, see corpusDb): each op is described by
+   {kind, args, revertData} instead of a closure, so a reload or tab close mid-flight
+   doesn't drop the write silently — flushOrphanedVetoQueue replays it on next boot. */
+const remoteOps = { promote: promoteRemote, redo: redoRemote, ajeno: provenanceRemote, reject: rejectRemote };
+
+function applyRevertRecord(rec) {
+  const { kind, revertData: rd } = rec;
+  if (!rd || !corpus) return;
+  if (kind === 'reject') {
+    if (rd.snapshot && !corpus.notes.some(n => n.path === rd.snapshot.path)) corpus.notes.push(rd.snapshot);
+    return;
+  }
+  const note = corpus.notes.find(n => n.path === rd.path && n.slug === rd.slug);
+  if (!note) return;
+  if (kind === 'promote') { note.path = rd.prevPath; note.folder = 'bandeja'; note.fm = rd.prevFm; }
+  else if (kind === 'redo') { if (rd.prevRedo === undefined) delete note.fm.redo; else note.fm.redo = rd.prevRedo; }
+  else if (kind === 'ajeno') { if (rd.prevProvenance === undefined) delete note.fm.provenance; else note.fm.provenance = rd.prevProvenance; }
+}
+
 let deskPending = 0;
 const deskQueue = [];
-function enqueueVeto(label, op, revert) {
-  deskQueue.push({ label, op, revert });
+function enqueueVeto(label, kind, args, revertData) {
   deskPending++;
-  pumpVetoQueue();
+  idbQueueAdd({ label, kind, args, revertData }).then(qid => {
+    deskQueue.push({ label, kind, args, revertData, qid });
+    pumpVetoQueue();
+  }).catch(e => {
+    console.warn('veto queue persist failed — running unpersisted (no crash-recovery for this one)', e);
+    deskQueue.push({ label, kind, args, revertData, qid: null });
+    pumpVetoQueue();
+  });
 }
 let deskPumping = false;
 async function pumpVetoQueue() {
@@ -1287,11 +1354,36 @@ async function pumpVetoQueue() {
   deskPumping = true;
   while (deskQueue.length) {
     const t = deskQueue.shift();
-    try { await t.op(); }
-    catch (e) { console.error('veto', t.label, e); t.revert(); renderAll(); toast(`veto falló (${t.label}) — revertido: ${e.message}`, true); }
-    finally { deskPending--; }
+    try { await remoteOps[t.kind](...t.args); }
+    catch (e) {
+      console.error('veto', t.label, e);
+      applyRevertRecord(t);
+      renderAll();
+      toast(`veto falló (${t.label}) — revertido: ${e.message}`, true);
+    }
+    finally {
+      deskPending--;
+      if (t.qid != null) idbQueueDel(t.qid).catch(() => {});
+    }
   }
   deskPumping = false;
+}
+async function flushOrphanedVetoQueue() {
+  let recs;
+  try { recs = await idbQueueAll(); } catch (e) { console.warn('vetoq read', e); return; }
+  if (!recs.length) return;
+  console.warn(`vetoq: ${recs.length} verdict(s) never flushed last session — replaying`);
+  let failed = 0;
+  for (const rec of recs) {
+    try { await remoteOps[rec.kind](...rec.args); }
+    catch (e) { console.error('vetoq replay', rec.label, e); applyRevertRecord(rec); failed++; }
+    finally { await idbQueueDel(rec.id).catch(() => {}); }
+  }
+  renderAll();
+  const ok = recs.length - failed;
+  toast(failed
+    ? `${ok} verdicto(s) recuperado(s) de la sesión anterior, ${failed} revertido(s) — revisa la bandeja.`
+    : `${ok} verdicto(s) de la sesión anterior, recuperado(s).`, failed > 0);
 }
 window.addEventListener('beforeunload', e => {
   if (deskPending > 0) { e.preventDefault(); e.returnValue = ''; }   // verdicts still flushing
@@ -1421,9 +1513,9 @@ async function deskVerdict(kind, note, opts = {}) {
     ['shelf', 'redo', 'revisor', 'revisor_nota', 'revisor_accion', 'revisor_shelf', 'revisor_type', 'revisor_title'].forEach(k => delete note.fm[k]);
     saveCorpusCache(); renderAll();
     toast(`❧ ${note.slug} → ${shelf}`);
-    enqueueVeto(`promote ${note.slug}`,
-      () => promoteRemote(prev.path, newPath, note.slug, shelf, opts.fixes),
-      () => { note.path = prev.path; note.folder = 'bandeja'; note.fm = prev.fm; saveCorpusCache(); });
+    enqueueVeto(`promote ${note.slug}`, 'promote',
+      [prev.path, newPath, note.slug, shelf, opts.fixes],
+      { path: newPath, slug: note.slug, prevPath: prev.path, prevFm: prev.fm });
   } else if (kind === 'redo') {
     const hint = opts.hint || await askPrompt('de vuelta al archivero', 'Contexto humano para re-destilar esta ficha — el barrido la rehace esta noche:', String(note.fm.redo || ''));
     if (!hint) return;
@@ -1432,9 +1524,9 @@ async function deskVerdict(kind, note, opts = {}) {
     note.fm.redo = clean;
     saveCorpusCache(); renderAll();
     toast('↺ acatada — el archivero la rehace en su próximo turno.');
-    enqueueVeto(`redo ${note.slug}`,
-      () => redoRemote(note.path, note.slug, clean),
-      () => { if (prev === undefined) delete note.fm.redo; else note.fm.redo = prev; saveCorpusCache(); });
+    enqueueVeto(`redo ${note.slug}`, 'redo',
+      [note.path, note.slug, clean],
+      { path: note.path, slug: note.slug, prevRedo: prev });
   } else if (kind === 'ajeno') {
     // el sello ajeno: someone else's work kept in the archive — never counts as Leandro's pluma
     const prev = note.fm.provenance;
@@ -1442,18 +1534,19 @@ async function deskVerdict(kind, note, opts = {}) {
     note.fm.provenance = next;
     saveCorpusCache(); renderAll();
     toast(next === 'external' ? 'sellada como ajena — de otra pluma.' : 'sello ajeno quitado.');
-    enqueueVeto(`ajeno ${note.slug}`,
-      () => provenanceRemote(note.path, note.slug, next),
-      () => { if (prev === undefined) delete note.fm.provenance; else note.fm.provenance = prev; saveCorpusCache(); });
+    enqueueVeto(`ajeno ${note.slug}`, 'ajeno',
+      [note.path, note.slug, next],
+      { path: note.path, slug: note.slug, prevProvenance: prev });
   } else if (kind === 'reject') {
     if (!confirm(`Rechazar “${note.fm.title || note.slug}” — la tarjeta sale del catálogo. El texto queda en los stacks y git recuerda la ficha. ¿Seguro?`)) return;
     const idx = corpus.notes.indexOf(note);
+    const snapshot = { path: note.path, folder: note.folder, slug: note.slug, fm: { ...note.fm }, body: note.body };
     corpus.notes.splice(idx, 1);
     saveCorpusCache(); renderAll();
     toast('ficha rechazada.');
-    enqueueVeto(`reject ${note.slug}`,
-      () => rejectRemote(note.path, note.slug),
-      () => { corpus.notes.splice(Math.min(idx, corpus.notes.length), 0, note); saveCorpusCache(); });
+    enqueueVeto(`reject ${note.slug}`, 'reject',
+      [note.path, note.slug],
+      { snapshot });
   }
 }
 
@@ -1785,6 +1878,9 @@ async function initArchivo() {
   corpus = await loadCorpusCache();              // IDB answers in ms; boot paints, this re-paints
   if (corpus && !corpus.notes) corpus = null;   // stale/foreign cache shape → refetch
   if (corpus) renderAll();
+  // a prior session's veto queue may have died before flushing (reload, tab close) — replay
+  // it against the just-loaded cache before anything else touches the bandeja
+  if (state.settings.sync.githubPat) flushOrphanedVetoQueue().catch(e => console.warn('vetoq flush', e));
   // boot from cache instantly, then re-pull in the background if stale (needs the PAT)
   if (state.settings.sync.githubPat && (!corpus || (Date.now() - (corpus.fetchedAt || 0)) > CORPUS_STALE_MS)) {
     setTimeout(() => { pullCorpus().catch(e => console.warn('auto-pull', e)); }, 400);
