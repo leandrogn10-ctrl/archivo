@@ -1073,15 +1073,59 @@ document.querySelectorAll('[data-theme-pick]').forEach(b => {
 
 /* ═══════════════════════════ EL ARCHIVO — the reading room ═══════════════════════════
    Corpus = markdown notes in a private repo, pulled via the GitHub contents API using the
-   sync PAT (needs repo scope). Cached in its OWN localStorage key — the corpus is NEVER
+   sync PAT (needs repo scope). Cached in its OWN IndexedDB store — the corpus is NEVER
    part of `state`, so note content never reaches the app-state gist. */
 
 const CORPUS_CACHE_KEY = 'archivo.corpus.v1';
 let corpus = null;           // { fetchedAt, notes: [{path, folder, slug, fm, body}] }
 let view = { mode: 'list', drawer: 'todo', slug: null, q: '' };
 
-function loadCorpusCache() {
-  try { const raw = localStorage.getItem(CORPUS_CACHE_KEY); if (raw) return JSON.parse(raw); } catch (e) { console.warn('corpus cache', e); }
+/* The cache lives in IndexedDB: the corpus outgrew localStorage's ~5MB quota (Jul 2026),
+   which made every setItem throw — the cache fossilized and every open re-pulled ~1k
+   fichas. Structured clone, no JSON round-trip. Same discipline: never inside `state`. */
+function corpusDb() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('archivo-corpus-cache', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function idbCorpusGet() {
+  const db = await corpusDb();
+  try {
+    return await new Promise((res, rej) => {
+      const rq = db.transaction('kv').objectStore('kv').get(CORPUS_CACHE_KEY);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  } finally { db.close(); }
+}
+async function idbCorpusSet(val) {
+  const db = await corpusDb();
+  try {
+    await new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(val, CORPUS_CACHE_KEY);
+      tx.oncomplete = res;
+      tx.onerror = () => rej(tx.error);
+    });
+  } finally { db.close(); }
+}
+
+async function loadCorpusCache() {
+  try {
+    const cached = await idbCorpusGet();
+    if (cached) return cached;
+    // one-time migration: seed from the old localStorage cache, then free its quota
+    const raw = localStorage.getItem(CORPUS_CACHE_KEY);
+    if (raw) {
+      const old = JSON.parse(raw);
+      await idbCorpusSet(old);
+      localStorage.removeItem(CORPUS_CACHE_KEY);
+      return old;
+    }
+  } catch (e) { console.warn('corpus cache', e); }
   return null;
 }
 
@@ -1160,8 +1204,7 @@ async function pullCorpus() {
       turno = JSON.parse(b64ToUtf8(t.content));
     } catch (e) {}
     corpus = { fetchedAt: Date.now(), notes, turno };
-    try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); }
-    catch (e) { console.warn('corpus cache write failed (quota?) — reading room still works this session', e); toast('corpus too big for the local cache — kept in memory only.', true); }
+    saveCorpusCache();
     state.corpus.lastPulledAt = Date.now(); save();
     renderAll();
     toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
@@ -1198,7 +1241,7 @@ async function setSensitivity(note, newVal) {
   });
   if (!res.ok) { const t = await res.text(); throw new Error(`${res.status} — ${t.slice(0, 100)}`); }
   note.fm.sensitivity = newVal;                                   // keep the local corpus + cache honest
-  try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); } catch (e) {}
+  saveCorpusCache();
   return true;
 }
 
@@ -1219,7 +1262,7 @@ async function ghWrite(method, path, bodyObj) {
   if (!res.ok) { const t = await res.text(); throw new Error(`${res.status} — ${t.slice(0, 100)}`); }
   return res;
 }
-function saveCorpusCache() { try { localStorage.setItem(CORPUS_CACHE_KEY, JSON.stringify(corpus)); } catch (e) {} }
+function saveCorpusCache() { idbCorpusSet(corpus).catch(e => console.warn('corpus cache write', e)); }
 
 function stripFmLines(content, keys) {
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -1738,9 +1781,10 @@ function wireOpeners(root) {
 }
 
 const CORPUS_STALE_MS = 30 * 60 * 1000;   // auto-refresh the bodega when the cache is older than 30 min
-function initArchivo() {
-  corpus = loadCorpusCache();
+async function initArchivo() {
+  corpus = await loadCorpusCache();              // IDB answers in ms; boot paints, this re-paints
   if (corpus && !corpus.notes) corpus = null;   // stale/foreign cache shape → refetch
+  if (corpus) renderAll();
   // boot from cache instantly, then re-pull in the background if stale (needs the PAT)
   if (state.settings.sync.githubPat && (!corpus || (Date.now() - (corpus.fetchedAt || 0)) > CORPUS_STALE_MS)) {
     setTimeout(() => { pullCorpus().catch(e => console.warn('auto-pull', e)); }, 400);

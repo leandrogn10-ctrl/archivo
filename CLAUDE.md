@@ -10,8 +10,10 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   (**token needs `gist` + `repo` scopes** — plain gist tokens can't see the private repo).
 - **App state** = standard C3 gist sync, untouched shell plumbing. `looksLikeMyState`
   requires `s.corpus.repo`.
-- **The corpus cache lives in its OWN localStorage key (`archivo.corpus.v1`), never inside
-  `state`** — note content must never reach the app-state gist. Don't "simplify" this.
+- **The corpus cache lives in its OWN IndexedDB store (`archivo-corpus-cache`, key
+  `archivo.corpus.v1`), never inside `state`** — note content must never reach the app-state
+  gist. Don't "simplify" this. (Was localStorage until Jul 2026: the corpus outgrew the ~5MB
+  quota, every cache write threw, and each open re-pulled ~1k fichas off a fossilized cache.)
 - This app **reads** — with ONE exception: **veto-pass micro-writes** (`setSensitivity`-style
   human verdicts: single frontmatter fields, contents-API PUT, sha-guarded, commit message
   `veto: …`). The app never generates or edits note *content*; that's the sweep's job or git.
