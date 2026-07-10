@@ -33,6 +33,14 @@ No Inter/Space Grotesk; don't reuse other apps' palettes.
   backlinks scan); `view` is the tiny router
 - Search: `/` focuses, title(10)>tags(5)>body(1) scoring — the F14 seed
 
+## Ship rule (SW pinning)
+**Every index.html change ships with a `sw.js` CACHE_NAME bump.** The SW is cache-first for
+the shell: clients pin whatever index.html their current cache grabbed, and only a changed
+sw.js byte-stream triggers a refresh. Jul 10 incident: a commit that skipped the bump left
+clients running v1 IDB code against a v2-upgraded database — every cache open threw
+VersionError and "nothing persisted". If two sessions ship near-simultaneously, LAST one
+must still land on a fresh CACHE_NAME.
+
 ## Dev loop
 ```bash
 python3 -m http.server <fresh port>   # SW caches aggressively — bump the port per session

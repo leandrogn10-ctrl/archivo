@@ -1228,16 +1228,25 @@ async function pullCorpus() {
       if (old && old.sha === f.sha) notes.push(old);
       else toFetch.push(f);
     }
+    let pullError = null, fetched = 0;
     for (let i = 0; i < toFetch.length; i += 12) {
       btn.textContent = `${Math.min(i + 12, toFetch.length)}/${toFetch.length}`;
       const batch = toFetch.slice(i, i + 12);
-      const got = await Promise.all(batch.map(async f => {
-        const j = await ghGet(`/repos/${repo}/contents/${f.path}?ref=${encodeURIComponent(branch)}`);
-        const n = parseNote(f.path, b64ToUtf8(j.content));
-        n.sha = f.sha;
-        return n;
-      }));
-      notes.push(...got);
+      try {
+        const got = await Promise.all(batch.map(async f => {
+          const j = await ghGet(`/repos/${repo}/contents/${f.path}?ref=${encodeURIComponent(branch)}`);
+          const n = parseNote(f.path, b64ToUtf8(j.content));
+          n.sha = f.sha;
+          return n;
+        }));
+        notes.push(...got); fetched += got.length;
+      } catch (e) {
+        // a dead batch (rate limit, mid-air drop) must not cost what's already fetched:
+        // keep the stale cached copy for the remainder — old sha → next pull resumes there
+        pullError = e;
+        for (const f of toFetch.slice(i)) { const old = prev.get(f.path); if (old) notes.push(old); }
+        break;
+      }
     }
     notes.sort((a, b) => String(b.fm.date || '').localeCompare(String(a.fm.date || '')));
     let turno = null;   // the archivero's heartbeat — absent until its first post-heartbeat run
@@ -1245,11 +1254,13 @@ async function pullCorpus() {
       const t = await ghGet(`/repos/${repo}/contents/turno.json?ref=${encodeURIComponent(branch)}`);
       turno = JSON.parse(b64ToUtf8(t.content));
     } catch (e) {}
-    corpus = { fetchedAt: Date.now(), notes, turno };
+    // fetchedAt 0 on a partial pull → the next open auto-pulls the remainder immediately
+    corpus = { fetchedAt: pullError ? 0 : Date.now(), notes, turno };
     saveCorpusCache();
     state.corpus.lastPulledAt = Date.now(); save();
     renderAll();
-    toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
+    if (pullError) toast(`bodega parcial: ${fetched} traídas, ${toFetch.length - fetched} pendientes (${String(pullError.message || pullError).slice(0, 80)}) — ⟳ reanuda donde quedó.`, true);
+    else toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
   } catch (e) {
     console.error('corpus pull', e);
     toast('pull de la bodega falló: ' + e.message, true);
