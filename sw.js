@@ -1,6 +1,6 @@
 // App-shell service worker — offline-first for the app shell, pass-through for APIs.
 // SLOT: rename CACHE_NAME per app (e.g. 'cuaderno-v1') and bump the suffix to force-refresh clients.
-const CACHE_NAME = 'archivo-v4';   // renamed from the shell slot; bump the suffix to force-refresh clients
+const CACHE_NAME = 'archivo-v5';   // renamed from the shell slot; bump the suffix to force-refresh clients
 const APP_SHELL = ['./', './index.html'];
 
 self.addEventListener('install', e => {

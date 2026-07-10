@@ -466,6 +466,13 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .redo-flag { font-family: 'Special Elite', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); border: 1px dashed var(--gold); border-radius: 2px; padding: 0 5px; }
 .revisor-note { font-size: 10.5px; font-style: italic; color: var(--gold); line-height: 1.5; border-top: 1px dashed var(--line); padding-top: 5px; }
 .revisor-note.rej { color: var(--danger); }
+.sala-remedio { font-size: 10.5px; color: var(--gold); border-top: 1px dashed var(--line); padding-top: 5px; }
+.sala-remedio b { color: var(--fg); }
+.sev-chip { font-family: 'Special Elite', monospace; font-size: 10px; padding: 1px 6px; border: 1px solid currentColor; border-radius: 2px; }
+.sev-S1 { color: var(--danger); } .sev-S2 { color: var(--gold); } .sev-S3 { color: var(--muted, #888); }
+.expediente { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--gold); background: color-mix(in srgb, var(--gold) 6%, transparent); }
+.expediente h4 { font-family: 'Special Elite', monospace; font-size: 11px; letter-spacing: .08em; color: var(--gold); margin: 0 0 6px; }
+.expediente .folio-body { font-size: 13px; }
 .desk-actions { display: flex; gap: 6px; margin-top: 2px; }
 .desk-actions button {
   flex: 1; background: var(--bg-elev); border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
@@ -1330,13 +1337,29 @@ function stripFmLines(content, keys) {
    The queue is durable (vetoq in IndexedDB, see corpusDb): each op is described by
    {kind, args, revertData} instead of a closure, so a reload or tab close mid-flight
    doesn't drop the write silently — flushOrphanedVetoQueue replays it on next boot. */
-const remoteOps = { promote: promoteRemote, redo: redoRemote, ajeno: provenanceRemote, reject: rejectRemote };
+const remoteOps = { promote: promoteRemote, redo: redoRemote, ajeno: provenanceRemote, reject: rejectRemote,
+  salaResolve: (...a) => salaResolveRemote(...a), salaDismiss: (...a) => salaDismissRemote(...a),
+  salaContexto: (...a) => salaContextoRemote(...a), salaExpediente: (...a) => salaExpedienteRemote(...a) };
 
 function applyRevertRecord(rec) {
   const { kind, revertData: rd } = rec;
   if (!rd || !corpus) return;
   if (kind === 'reject') {
     if (rd.snapshot && !corpus.notes.some(n => n.path === rd.snapshot.path)) corpus.notes.push(rd.snapshot);
+    return;
+  }
+  if (kind === 'salaResolve' || kind === 'salaDismiss') {
+    if (rd.finding && !corpus.notes.some(n => n.path === rd.finding.path)) corpus.notes.push(rd.finding);
+    if (rd.targetPrev) {
+      const t = corpus.notes.find(n => n.slug === rd.targetPrev.slug);
+      if (t) { t.path = rd.targetPrev.path; t.folder = rd.targetPrev.folder; t.fm = rd.targetPrev.fm; }
+    }
+    return;
+  }
+  if (kind === 'salaContexto' || kind === 'salaExpediente') {
+    const f = corpus.notes.find(n => n.path === rd.findingPath);
+    if (f) { if (rd.prevHint === undefined) delete f.fm.contexto_hint; else f.fm.contexto_hint = rd.prevHint;
+             if (rd.prevStatus === undefined) delete f.fm.status; else f.fm.status = rd.prevStatus; }
     return;
   }
   const note = corpus.notes.find(n => n.path === rd.path && n.slug === rd.slug);
@@ -1482,6 +1505,69 @@ async function provenanceRemote(path, slug, next) {
   await ghWrite('PUT', path, { message: `veto: ${slug} provenance → ${next}`, content: utf8ToB64(content), sha: j.sha });
 }
 
+/* ── la sala de auditoría: remote ops. Findings (auditoria/*.md) are ephemeral tickets —
+   resolution executes the remedy on the TARGET ficha and deletes the ticket; dismissal
+   appends the huella to auditoria/desestimados.jsonl (verdict memory — the auditor reads
+   it before emitting, so a dismissed finding can never return). Same discipline as the
+   mesa: sha-guarded, idempotent, `sala:` commits. */
+async function ghGetOr404(path) {
+  const repo = state.corpus.repo, branch = state.corpus.branch;
+  try { return await ghGet(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`); }
+  catch (e) { if (String(e.message).startsWith('404')) return null; throw e; }
+}
+async function salaDeleteFinding(findingPath, why) {
+  const j = await ghGetOr404(findingPath);
+  if (!j) return;   // already resolved elsewhere = success
+  await ghWrite('DELETE', findingPath, { message: `sala: ${why}`, sha: j.sha });
+}
+async function salaResolveRemote(findingPath, remedio, args) {
+  if (remedio === 'redo') await redoRemote(args.targetPath, args.targetSlug, args.hint);
+  else if (remedio === 'reshelve') await promoteRemote(args.targetPath, args.newPath, args.targetSlug, args.shelf, null);
+  // remedio 'nota': informational — resolving IS the action
+  await salaDeleteFinding(findingPath, `resuelto ${args.findingSlug} (${remedio})`);
+}
+async function salaDismissRemote(findingPath, findingSlug, huella) {
+  const ledgerPath = 'auditoria/desestimados.jsonl';
+  const cur = await ghGetOr404(ledgerPath);
+  const line = JSON.stringify({ huella, finding: findingSlug, at: new Date().toISOString().slice(0, 10) }) + '\n';
+  const body = cur ? b64ToUtf8(cur.content) : '';
+  if (!body.includes(`"${huella}"`)) {   // idempotent against replay
+    await ghWrite('PUT', ledgerPath, { message: `sala: desestima ${findingSlug}`, content: utf8ToB64(body + line), ...(cur ? { sha: cur.sha } : {}) });
+  }
+  await salaDeleteFinding(findingPath, `desestimado ${findingSlug}`);
+}
+async function salaContextoRemote(findingPath, findingSlug, hintText) {
+  const j = await ghGetOr404(findingPath);
+  if (!j) return;   // ticket already resolved — nothing to annotate
+  let content = b64ToUtf8(j.content);
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) throw new Error('el hallazgo no tiene frontmatter');
+  let fm = m[1];
+  const setLine = (k, v) => {
+    const line = `${k}: ${String(v).replace(/\s+/g, ' ').trim()}`;
+    fm = new RegExp(`^${k}:`, 'm').test(fm) ? fm.replace(new RegExp(`^${k}:.*$`, 'm'), line) : fm + `\n${line}`;
+  };
+  setLine('contexto_hint', hintText);
+  setLine('status', 'recontexto');
+  content = content.slice(0, m.index) + `---\n${fm}\n---` + content.slice(m.index + m[0].length);
+  await ghWrite('PUT', findingPath, { message: `sala: contexto para ${findingSlug}`, content: utf8ToB64(content), sha: j.sha });
+}
+async function salaExpedienteRemote(personaSlug, bullet, findingPath, findingSlug) {
+  const today = new Date().toISOString().slice(0, 10);
+  const path = `contexto/${personaSlug}.md`;
+  const cur = await ghGetOr404(path);
+  let content;
+  if (!cur) {
+    content = `---\npersona: ${personaSlug}\nescrito: ${today}\nfuente: Leandro (sala de auditoría)\n---\n- ${bullet}\n`;
+  } else {
+    content = b64ToUtf8(cur.content);
+    if (content.includes(`- ${bullet}`)) { /* replay — already appended */ }
+    else content = content.replace(/^escrito:.*$/m, `escrito: ${today}`).trimEnd() + `\n- ${bullet}\n`;
+  }
+  await ghWrite('PUT', path, { message: `sala: expediente ${personaSlug}`, content: utf8ToB64(content), ...(cur ? { sha: cur.sha } : {}) });
+  await salaContextoRemote(findingPath, findingSlug, `ver expediente [[${personaSlug}]] — actualizado hoy`);
+}
+
 /* the desk driver — keyboard-first; deskNotes mirrors the bandeja list as last rendered */
 let deskNotes = [], deskSel = 0;
 
@@ -1580,8 +1666,94 @@ document.addEventListener('keydown', e => {
   if (act) { e.preventDefault(); act(); }
 });
 
+/* ── la sala de auditoría: verdict driver. a=aceptar (ejecuta el remedio), A=aceptar toda
+   la clase, x=desestimar (para siempre — huella al ledger), c=contexto (re-juicio con tu
+   nota), e=al expediente (tu nota se vuelve contexto permanente del slug). ── */
+function salaFindingSnapshot(n) { return { path: n.path, folder: n.folder, slug: n.slug, fm: { ...n.fm }, body: n.body }; }
+async function salaVerdict(kind, n) {
+  if (!n) return;
+  const huella = String(n.fm.huella || `${n.fm.kind}|${n.fm.target}`);
+  if (kind === 'aceptar') {
+    const remedio = String(n.fm.remedio || 'nota');
+    const target = corpus.notes.find(t => t.slug === String(n.fm.target || '') && t.folder !== 'auditoria');
+    if (remedio !== 'nota' && !target) { toast(`la ficha objetivo “${n.fm.target}” no está en la bodega — pulsa ⟳.`, true); return; }
+    const finding = salaFindingSnapshot(n);
+    const args = { findingSlug: n.slug };
+    let targetPrev = null;
+    if (remedio === 'redo') {
+      const hint = String(n.fm.hint || n.fm.title || 'hallazgo del auditor');
+      targetPrev = { slug: target.slug, path: target.path, folder: target.folder, fm: { ...target.fm } };
+      target.fm.redo = hint;
+      Object.assign(args, { targetPath: target.path, targetSlug: target.slug, hint });
+    } else if (remedio === 'reshelve') {
+      const shelf = String(n.fm.remedio_arg || '');
+      if (!SHELVES.includes(shelf)) { toast(`“${shelf}” no es un estante.`, true); return; }
+      targetPrev = { slug: target.slug, path: target.path, folder: target.folder, fm: { ...target.fm } };
+      Object.assign(args, { targetPath: target.path, targetSlug: target.slug, shelf, newPath: `${shelf}/${target.slug}.md` });
+      target.path = args.newPath; target.folder = shelf;
+    }
+    corpus.notes.splice(corpus.notes.indexOf(n), 1);
+    saveCorpusCache(); renderAll();
+    toast(remedio === 'nota' ? '❧ hallazgo resuelto.' : `❧ resuelto — ${remedio} sobre ${n.fm.target}.`);
+    enqueueVeto(`sala aceptar ${n.slug}`, 'salaResolve', [n.path, remedio, args], { finding, targetPrev });
+  } else if (kind === 'clase') {
+    const same = deskNotes.filter(o => o.fm.kind === n.fm.kind && String(o.fm.remedio || 'nota') === String(n.fm.remedio || 'nota') && o.fm.status !== 'recontexto');
+    if (!same.length) return;
+    if (!confirm(`Aceptar ${same.length} hallazgo(s) de la clase “${n.fm.kind}” (${n.fm.remedio || 'nota'}). ¿Seguro?`)) return;
+    for (const o of same) await salaVerdict('aceptar', o);
+    toast(`❧ clase “${n.fm.kind}”: ${same.length} aceptados — la cola los ejecuta.`);
+  } else if (kind === 'desestimar') {
+    if (!confirm(`Desestimar “${n.fm.title || n.slug}” PARA SIEMPRE — el auditor no volverá a levantarlo (huella al ledger). ¿Seguro?`)) return;
+    const finding = salaFindingSnapshot(n);
+    corpus.notes.splice(corpus.notes.indexOf(n), 1);
+    saveCorpusCache(); renderAll();
+    toast('hallazgo desestimado — no vuelve.');
+    enqueueVeto(`sala desestimar ${n.slug}`, 'salaDismiss', [n.path, n.slug, huella], { finding });
+  } else if (kind === 'contexto') {
+    const hint = await askPrompt('contexto para el auditor', 'Tu nota viaja con el hallazgo — el auditor re-juzga con ella en su próximo turno:', String(n.fm.contexto_hint || ''));
+    if (!hint) return;
+    const prevHint = n.fm.contexto_hint, prevStatus = n.fm.status;
+    n.fm.contexto_hint = hint.replace(/\s+/g, ' ').trim(); n.fm.status = 'recontexto';
+    saveCorpusCache(); renderAll();
+    toast('↺ con tu contexto — re-juicio en el próximo turno.');
+    enqueueVeto(`sala contexto ${n.slug}`, 'salaContexto', [n.path, n.slug, n.fm.contexto_hint], { findingPath: n.path, prevHint, prevStatus });
+  } else if (kind === 'expediente') {
+    const slug = String(n.fm.target || '');
+    const bullet = await askPrompt(`al expediente de ${slug}`, 'Tu nota se vuelve contexto PERMANENTE de este slug (date-stampea lo volátil):', '');
+    if (!bullet) return;
+    const clean = bullet.replace(/\s+/g, ' ').trim();
+    const prevHint = n.fm.contexto_hint, prevStatus = n.fm.status;
+    n.fm.contexto_hint = `ver expediente [[${slug}]]`; n.fm.status = 'recontexto';
+    const exp = corpus.notes.find(o => o.folder === 'contexto' && o.slug === slug);
+    if (exp) exp.body = exp.body.trimEnd() + `\n- ${clean}`;
+    else corpus.notes.push({ path: `contexto/${slug}.md`, folder: 'contexto', slug, fm: { persona: slug, escrito: new Date().toISOString().slice(0, 10) }, body: `- ${clean}` });
+    saveCorpusCache(); renderAll();
+    toast(`📜 al expediente de ${slug} — contexto permanente.`);
+    enqueueVeto(`sala expediente ${slug}`, 'salaExpediente', [slug, clean, n.path, n.slug], { findingPath: n.path, prevHint, prevStatus });
+  }
+}
+document.addEventListener('keydown', e => {
+  if (view.mode !== 'list' || view.drawer !== 'auditoria' || view.q || !deskNotes.length) return;
+  if (settingsModal.open || promptModal.open || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  const n = deskNotes[deskSel];
+  const act = {
+    j: () => deskSelect(deskSel + 1),
+    k: () => deskSelect(deskSel - 1),
+    a: () => salaVerdict('aceptar', n),
+    A: () => salaVerdict('clase', n),
+    x: () => salaVerdict('desestimar', n),
+    c: () => salaVerdict('contexto', n),
+    e: () => salaVerdict('expediente', n),
+    Enter: () => { if (n) { view = { mode: 'note', drawer: 'auditoria', slug: n.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 }); } },
+  }[e.key];
+  if (act) { e.preventDefault(); act(); }
+});
+
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos', personas: 'Personas (La Red)' };
+const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos', personas: 'Personas (La Red)', auditoria: 'Sala de auditoría' };
+const HIDDEN_FOLDERS = new Set(['contexto']);          // expedientes render inline on persona folios, never as cards
+const TICKET_FOLDERS = new Set(['auditoria']);         // work tickets: own drawer, excluded from Todo + search
 const TYPE_STAMP = {
   course: 'st-curso', concept: 'st-concepto', claim: 'st-claim', source: 'st-concepto',
   'debate-case': 'st-caso', craft: 'st-oficio', creative: 'st-creativo', project: 'st-concepto',
@@ -1596,7 +1768,7 @@ const TYPE_ES = {
 
 function notesFor(drawer) {
   if (!corpus) return [];
-  if (drawer === 'todo') return corpus.notes;
+  if (drawer === 'todo') return corpus.notes.filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
   return corpus.notes.filter(n => n.folder === drawer);
 }
 
@@ -1604,7 +1776,7 @@ function renderDrawers() {
   const ul = document.getElementById('drawer-list');
   if (!ul) return;
   const total = corpus ? corpus.notes.length : 0;
-  const folders = corpus ? [...new Set(corpus.notes.map(n => n.folder))].filter(Boolean).sort() : [];
+  const folders = corpus ? [...new Set(corpus.notes.map(n => n.folder))].filter(f => f && !HIDDEN_FOLDERS.has(f)).sort() : [];
   let html = `<li data-drawer="todo" class="${view.mode === 'list' && view.drawer === 'todo' ? 'active' : ''}"><span>Todo el archivo</span><span class="count">${total}</span></li>`;
   folders.forEach(f => {
     const c = corpus.notes.filter(n => n.folder === f).length;
@@ -1665,6 +1837,7 @@ function mdRender(src) {
 function searchNotes(q) {
   const needle = q.toLowerCase();
   return corpus.notes
+    .filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder))
     .map(n => {
       const title = String(n.fm.title || n.slug).toLowerCase();
       const tags = (Array.isArray(n.fm.tags) ? n.fm.tags.join(' ') : '').toLowerCase();
@@ -1768,6 +1941,42 @@ function wireDesk(root) {
     deskSelect(idx);
     deskVerdict(b.dataset.verdict, deskNotes[idx]);
   }));
+  root.querySelectorAll('[data-sala]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const idx = Number(b.closest('.card').dataset.idx);
+    deskSelect(idx);
+    salaVerdict(b.dataset.sala, deskNotes[idx]);
+  }));
+}
+
+function salaBarHtml(notes) {
+  const s1 = notes.filter(n => n.fm.severity === 'S1' && n.fm.status !== 'recontexto').length;
+  const rec = notes.filter(n => n.fm.status === 'recontexto').length;
+  return `<div class="desk-bar"><span class="desk-title">sala de auditoría</span>
+    <span>${notes.length} hallazgo${notes.length === 1 ? '' : 's'}${s1 ? ` · ${s1} S1 ⚠` : ''}${rec ? ` · ${rec} ↺ re-juicio pendiente` : ''}</span>
+    <span class="desk-keys"><kbd>a</kbd> aceptar · <kbd>A</kbd> toda la clase · <kbd>x</kbd> desestimar · <kbd>c</kbd> contexto · <kbd>e</kbd> al expediente · <kbd>j</kbd><kbd>k</kbd> elegir · <kbd>↵</kbd> abrir</span></div>`;
+}
+
+function salaCardHtml(n, deskIdx) {
+  const sev = String(n.fm.severity || 'S2');
+  const rec = n.fm.status === 'recontexto';
+  const remedio = String(n.fm.remedio || 'nota');
+  const remedioTxt = remedio === 'reshelve' ? `mover <b>${escapeHtml(String(n.fm.target || '?'))}</b> → <b>${escapeHtml(String(n.fm.remedio_arg || '?'))}</b>`
+    : remedio === 'redo' ? `redo sobre <b>${escapeHtml(String(n.fm.target || '?'))}</b>` : 'informativo — aceptar lo archiva';
+  return `<div class="card${deskIdx === deskSel ? ' desk-sel' : ''}${rec ? ' espera' : ''}" data-open="${escapeHtml(n.slug)}" data-idx="${deskIdx}">
+    <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair"><span class="sev-chip sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span><span class="stamp st-otro">${escapeHtml(String(n.fm.kind || 'hallazgo'))}</span></span></div>
+    <div class="excerpt">${escapeHtml(n.body.slice(0, 220))}</div>
+    <div class="sala-remedio">❧ remedio: ${remedioTxt}${n.fm.target ? ` · <a data-open="${escapeHtml(String(n.fm.target))}">ver ficha ↗</a>` : ''}</div>
+    ${rec ? `<div class="revisor-note">↺ re-juicio pendiente — tu contexto: ${escapeHtml(String(n.fm.contexto_hint || ''))}</div>` : ''}
+    <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${escapeHtml(String(n.fm.target || ''))}</span></div>
+    ${rec ? '' : `<div class="desk-actions">
+      <button class="dk-agree" data-sala="aceptar" title="ejecutar el remedio (a)">❧ aceptar</button>
+      <button data-sala="clase" title="aceptar todos los de esta clase (A)">❧❧ clase</button>
+      <button data-sala="contexto" title="re-juicio con tu nota (c)">✎ contexto</button>
+      <button data-sala="expediente" title="tu nota se vuelve contexto permanente del slug (e)">📜 expediente</button>
+      <button class="dk-x" data-sala="desestimar" title="desestimar para siempre (x)">✕</button>
+    </div>`}
+  </div>`;
 }
 
 function renderView() {
@@ -1805,6 +2014,11 @@ function renderView() {
         ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo ↗</a>` : ''}
       </div>
       <div class="folio-body">${mdRender(n.body)}</div>
+      ${(() => {   // el expediente: standing human context, rendered inline on persona folios
+        if (n.folder !== 'personas') return '';
+        const exp = corpus.notes.find(o => o.folder === 'contexto' && o.slug === n.slug);
+        return exp ? `<div class="expediente"><h4>📜 expediente — contexto humano</h4><div class="folio-body">${mdRender(exp.body)}</div></div>` : '';
+      })()}
       <div style="margin-top:18px">${tags}</div>
       ${backlinks.length ? `<div class="backlinks"><h4>Fichas que citan a esta</h4>${backlinks.map(b =>
         `<a class="bl" data-open="${escapeHtml(b.slug)}">❧ ${escapeHtml(b.fm.title || b.slug)}</a>`).join('')}</div>` : ''}
@@ -1842,6 +2056,20 @@ function renderView() {
       `<div class="group-label">${escapeHtml(FOLDER_LABELS[f] || f)}</div>` +
       notes.filter(n => n.folder === f).map(n => cardHtml(n, q)).join('')
     ).join('') + `</div>`;
+  } else if (!q && view.drawer === 'auditoria') {
+    // la sala: S1 first, then S2/S3; re-juicios (contexto dado) sink dimmed — done from
+    // Leandro's side, waiting on el auditor's next turn
+    const abiertas = notes.filter(n => n.fm.status !== 'recontexto')
+      .sort((a, b) => String(a.fm.severity || 'S2').localeCompare(String(b.fm.severity || 'S2')) || String(a.fm.kind || '').localeCompare(String(b.fm.kind || '')));
+    const rejuicio = notes.filter(n => n.fm.status === 'recontexto');
+    deskNotes = [...abiertas, ...rejuicio];
+    deskSel = Math.max(0, Math.min(deskSel, deskNotes.length - 1));
+    root.innerHTML = `<div class="cards">${salaBarHtml(deskNotes)}`
+      + abiertas.map((n, i) => salaCardHtml(n, i)).join('')
+      + (rejuicio.length ? `<div class="group-label">↺ re-juicio pendiente (${rejuicio.length}) — ya diste contexto</div>` : '')
+      + rejuicio.map((n, i) => salaCardHtml(n, abiertas.length + i)).join('')
+      + `</div>`;
+    wireDesk(root);
   } else {
     const desk = !q && view.drawer === 'bandeja';
     if (desk) {
