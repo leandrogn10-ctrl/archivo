@@ -1359,7 +1359,10 @@ function applyRevertRecord(rec) {
     if (rd.finding && !corpus.notes.some(n => n.path === rd.finding.path)) corpus.notes.push(rd.finding);
     if (rd.targetPrev) {
       const t = corpus.notes.find(n => n.slug === rd.targetPrev.slug);
+      // reject_target spliced the note out entirely — a revert must re-insert it (has
+      // .body), not just mutate a note that no longer exists locally
       if (t) { t.path = rd.targetPrev.path; t.folder = rd.targetPrev.folder; t.fm = rd.targetPrev.fm; }
+      else if ('body' in rd.targetPrev) corpus.notes.push({ ...rd.targetPrev });
     }
     return;
   }
@@ -1530,6 +1533,7 @@ async function salaDeleteFinding(findingPath, why) {
 async function salaResolveRemote(findingPath, remedio, args) {
   if (remedio === 'redo') await redoRemote(args.targetPath, args.targetSlug, args.hint);
   else if (remedio === 'reshelve') await promoteRemote(args.targetPath, args.newPath, args.targetSlug, args.shelf, null);
+  else if (remedio === 'reject_target') await rejectRemote(args.targetPath, args.targetSlug);
   // remedio 'nota': informational — resolving IS the action
   await salaDeleteFinding(findingPath, `resuelto ${args.findingSlug} (${remedio})`);
 }
@@ -1698,6 +1702,15 @@ async function salaVerdict(kind, n) {
       targetPrev = { slug: target.slug, path: target.path, folder: target.folder, fm: { ...target.fm } };
       Object.assign(args, { targetPath: target.path, targetSlug: target.slug, shelf, newPath: `${shelf}/${target.slug}.md` });
       target.path = args.newPath; target.folder = shelf;
+    } else if (remedio === 'reject_target') {
+      // the one destructive remedio: el Auditor may PROPOSE deletion (mala-extraccion —
+      // e.g. a website or institute mis-filed as a persona), but only a human keystroke
+      // executes it — same discipline as x on the mesa. Full snapshot so a failed/reverted
+      // delete can be spliced back in even though it's optimistically removed below.
+      if (!confirm(`“${target.fm.title || target.slug}” — el auditor propone que esto NO es una persona real. Esto BORRA la ficha (el texto/git la recuerda). ¿Seguro?`)) return;
+      targetPrev = salaFindingSnapshot(target);
+      Object.assign(args, { targetPath: target.path, targetSlug: target.slug });
+      corpus.notes.splice(corpus.notes.indexOf(target), 1);
     }
     corpus.notes.splice(corpus.notes.indexOf(n), 1);
     saveCorpusCache(); renderAll();
@@ -1984,7 +1997,9 @@ function salaCardHtml(n, deskIdx) {
   const rec = n.fm.status === 'recontexto';
   const remedio = String(n.fm.remedio || 'nota');
   const remedioTxt = remedio === 'reshelve' ? `mover <b>${escapeHtml(String(n.fm.target || '?'))}</b> → <b>${escapeHtml(String(n.fm.remedio_arg || '?'))}</b>`
-    : remedio === 'redo' ? `redo sobre <b>${escapeHtml(String(n.fm.target || '?'))}</b>` : 'informativo — aceptar lo archiva';
+    : remedio === 'redo' ? `redo sobre <b>${escapeHtml(String(n.fm.target || '?'))}</b>`
+    : remedio === 'reject_target' ? `⚠ BORRAR <b>${escapeHtml(String(n.fm.target || '?'))}</b> — propuesto por el auditor, pide confirmación`
+    : 'informativo — aceptar lo archiva';
   const fichas = salaTargetFichas(n);
   const evidencia = fichas.length
     ? `<div class="hallazgo-fichas">${fichas.map(f => `<div class="hallazgo-ficha">
