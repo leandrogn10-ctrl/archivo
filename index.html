@@ -2148,7 +2148,11 @@ function renderView() {
 }
 
 function wireOpeners(root) {
-  root.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => {
+  root.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', e => {
+    // a nested opener (e.g. sala's "abrir folio" link on a finding card, itself [data-open]
+    // to the FINDING) must not let the click bubble to its ancestor's own [data-open] —
+    // that was silently overwriting the navigation with the wrong slug
+    e.stopPropagation();
     view = { mode: 'note', drawer: view.drawer, slug: el.dataset.open, q: '' };
     renderAll();
     window.scrollTo({ top: 0 });
