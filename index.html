@@ -1271,7 +1271,11 @@ async function pullCorpus() {
     // fetchedAt 0 on a partial pull → the next open auto-pulls the remainder immediately
     corpus = { fetchedAt: pullError ? 0 : Date.now(), notes, turno };
     saveCorpusCache();
-    state.corpus.lastPulledAt = Date.now(); save();
+    // lastPulledAt is never read back (the staleness check + "pulled X ago" both use
+    // corpus.fetchedAt from the IDB cache) — push:false so a routine corpus pull doesn't
+    // burn the gist_update bucket, which is a much smaller quota (100/hr) than core (5000/hr)
+    // and got fully exhausted Jul 10 by pulls alone cascading into state-gist writes
+    state.corpus.lastPulledAt = Date.now(); save({ push: false });
     renderAll();
     if (pullError) toast(`bodega parcial: ${fetched} traídas, ${toFetch.length - fetched} pendientes (${String(pullError.message || pullError).slice(0, 80)}) — ⟳ reanuda donde quedó.`, true);
     else toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
