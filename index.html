@@ -1858,22 +1858,127 @@ function mdRender(src) {
 }
 
 /* ── search (F14 seed) ── */
+/* ── smart search (F14 seed, hardened Jul 2026): accent-insensitive, bilingual
+   EN/ES synonym expansion, per-token scoring across fields, wikilink/persona-
+   graph boost, fuzzy fallback for likely typos. All local, no network — the
+   corpus is small enough (~2k fichas) that even an unmemoized full pass is
+   sub-millisecond; per-note field normalization is still cached on first
+   touch so repeated keystrokes don't re-normalize long body text. Leandro
+   writes in both languages — "mom" not finding "mamá" was the bug that
+   started this; the fix generalizes far past family terms. */
+const SEARCH_SYNONYMS = (() => {
+  const groups = [
+    // family
+    ['mom', 'mother', 'mama', 'mamá', 'madre'], ['dad', 'father', 'papa', 'papá', 'padre'],
+    ['brother', 'hermano', 'hermanos'], ['sister', 'hermana', 'hermanas'],
+    ['grandmother', 'grandma', 'abuela'], ['grandfather', 'grandpa', 'abuelo'],
+    ['cousin', 'primo', 'prima', 'primos', 'primas'], ['uncle', 'tio', 'tío'], ['aunt', 'tia', 'tía'],
+    ['girlfriend', 'novia'], ['boyfriend', 'novio'],
+    ['friend', 'amigo', 'amiga', 'amigos', 'amigas'], ['family', 'familia'], ['parents', 'padres'],
+    // school / academia
+    ['school', 'escuela', 'colegio'], ['university', 'college', 'universidad'],
+    ['professor', 'teacher', 'profesor', 'profesora', 'maestro', 'maestra'], ['class', 'clase'],
+    ['exam', 'test', 'examen'], ['homework', 'assignment', 'tarea'], ['essay', 'ensayo'],
+    ['paper', 'trabajo'], ['book', 'libro'], ['reading', 'lectura'],
+    ['grade', 'nota', 'calificacion', 'calificación'],
+    // debate
+    ['judge', 'juez', 'jueza'], ['round', 'ronda'], ['motion', 'mocion', 'moción'], ['case', 'caso'],
+    ['argument', 'argumento'], ['team', 'equipo'], ['tournament', 'torneo'], ['speech', 'discurso'],
+    // emotions / life
+    ['happy', 'feliz', 'contento', 'contenta'], ['sad', 'triste'], ['love', 'amor'],
+    ['scared', 'afraid', 'miedo', 'asustado', 'asustada'],
+    ['angry', 'enojado', 'enojada', 'molesto', 'molesta'], ['tired', 'cansado', 'cansada'],
+    ['proud', 'orgulloso', 'orgullosa'],
+    // common verbs (conjugation-lite — catches the frequent forms, not exhaustive)
+    ['study', 'studying', 'studied', 'estudiar', 'estudio', 'estudié', 'estudiando'],
+    ['write', 'writing', 'wrote', 'written', 'escribir', 'escribi', 'escribí', 'escribiendo'],
+    ['read', 'reading', 'leer', 'lei', 'leí', 'leyendo'],
+    ['think', 'thinking', 'thought', 'pensar', 'pienso', 'pensé', 'pensando'],
+    ['remember', 'recordar', 'recuerdo', 'recordé'],
+    ['work', 'working', 'worked', 'trabajar', 'trabajo', 'trabajé', 'trabajando'],
+    ['travel', 'traveling', 'viajar', 'viaje', 'viajé'],
+    ['win', 'won', 'winning', 'ganar', 'gane', 'gané', 'ganando'],
+    ['lose', 'lost', 'losing', 'perder', 'perdi', 'perdí', 'perdiendo'],
+    // places
+    ['home', 'house', 'casa'], ['city', 'ciudad'], ['country', 'pais', 'país'],
+    ['peru', 'perú', 'peruvian', 'peruano', 'peruana'],
+    // recurring debate/politics topics
+    ['election', 'eleccion', 'elección', 'elecciones'], ['government', 'gobierno'],
+    ['president', 'presidente', 'presidenta'], ['democracy', 'democracia'],
+    ['economy', 'economia', 'economía'], ['war', 'guerra'], ['climate', 'clima'],
+  ];
+  const map = {};
+  for (const g of groups) for (const w of g) map[w] = g;
+  return map;
+})();
+
+function _stripAccents(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+function _norm(s) { return _stripAccents(String(s || '').toLowerCase()); }
+function _expandToken(tok) { const syn = SEARCH_SYNONYMS[tok]; return syn ? syn.map(_norm) : [tok]; }
+
+function _noteSearchFields(n) {
+  if (n._sf) return n._sf;
+  n._sf = {
+    title: _norm(n.fm.title || n.slug),
+    tags: _norm(Array.isArray(n.fm.tags) ? n.fm.tags.join(' ') : ''),
+    body: _norm(n.body),
+    wikilinks: (n.body.match(/\[\[([^\]|#]+)/g) || []).map(w => _norm(w.slice(2))),
+  };
+  return n._sf;
+}
+
+function _levenshteinLE2(a, b) {
+  // cheap bounded edit distance — only called on short candidate words as a
+  // typo-tolerance FALLBACK, never against the whole corpus
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[a.length][b.length];
+}
+
 function searchNotes(q) {
-  const needle = q.toLowerCase();
-  return corpus.notes
-    .filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder))
-    .map(n => {
-      const title = String(n.fm.title || n.slug).toLowerCase();
-      const tags = (Array.isArray(n.fm.tags) ? n.fm.tags.join(' ') : '').toLowerCase();
-      const body = n.body.toLowerCase();
-      let score = 0;
-      if (title.includes(needle)) score += 10;
-      if (tags.includes(needle)) score += 5;
-      if (body.includes(needle)) score += 1;
-      return { n, score };
-    })
-    .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score)
+  const rawTokens = _norm(q).split(/[^a-z0-9]+/).filter(t => t.length > 1);
+  if (!rawTokens.length) return [];
+  const candidates = corpus.notes.filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
+  const tokenGroups = rawTokens.map(_expandToken);
+  const fullPhrase = _norm(q);
+
+  const results = candidates.map(n => {
+    const f = _noteSearchFields(n);
+    let score = 0, tokensHit = 0;
+    for (const group of tokenGroups) {
+      let hit = false;
+      for (const variant of group) {
+        if (f.title.includes(variant)) { score += 10; hit = true; }
+        if (f.tags.includes(variant)) { score += 5; hit = true; }
+        if (f.wikilinks.some(w => w.includes(variant))) { score += 6; hit = true; }
+        if (f.body.includes(variant)) { score += 1; hit = true; }
+      }
+      if (hit) tokensHit++;
+    }
+    if (rawTokens.length > 1 && f.title.includes(fullPhrase)) score += 8;       // exact-phrase bonus
+    if (rawTokens.length > 1 && f.body.includes(fullPhrase)) score += 3;
+    if (tokensHit === tokenGroups.length && tokenGroups.length > 1) score += 4; // all-tokens-present bonus
+    return { n, score };
+  }).filter(r => r.score > 0);
+
+  // fuzzy fallback: ONLY when nothing matched at all, try typo-tolerant title
+  // matching — a safety net for "leadnro", not a replacement for real matching
+  if (!results.length && rawTokens.length === 1 && rawTokens[0].length >= 4) {
+    const tok = rawTokens[0], maxDist = tok.length > 6 ? 2 : 1;
+    for (const n of candidates) {
+      const words = _noteSearchFields(n).title.split(/\s+/);
+      if (words.some(w => w.length >= 4 && _levenshteinLE2(tok, w) <= maxDist)) results.push({ n, score: 3 });
+    }
+  }
+
+  return results
+    .sort((a, b) => b.score - a.score || String(b.n.fm.date || '').localeCompare(String(a.n.fm.date || '')))
     .map(r => r.n);
 }
 
