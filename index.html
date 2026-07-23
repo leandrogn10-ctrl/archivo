@@ -1623,6 +1623,7 @@ async function deskVerdict(kind, note, opts = {}) {
     if (opts.fixes?.type) note.fm.type = opts.fixes.type;
     if (opts.fixes?.title) note.fm.title = opts.fixes.title;
     ['shelf', 'redo', 'revisor', 'revisor_nota', 'revisor_accion', 'revisor_shelf', 'revisor_type', 'revisor_title'].forEach(k => delete note.fm[k]);
+    delete note._sf; // title may have changed — stale memoized search fields would hide it from search this session
     saveCorpusCache(); renderAll();
     toast(`❧ ${note.slug} → ${shelf}`);
     enqueueVeto(`promote ${note.slug}`, 'promote',
@@ -1749,7 +1750,7 @@ async function salaVerdict(kind, n) {
     const prevHint = n.fm.contexto_hint, prevStatus = n.fm.status;
     n.fm.contexto_hint = `ver expediente [[${slug}]]`; n.fm.status = 'recontexto';
     const exp = corpus.notes.find(o => o.folder === 'contexto' && o.slug === slug);
-    if (exp) exp.body = exp.body.trimEnd() + `\n- ${clean}`;
+    if (exp) { exp.body = exp.body.trimEnd() + `\n- ${clean}`; delete exp._sf; } // body changed — invalidate memoized search fields
     else corpus.notes.push({ path: `contexto/${slug}.md`, folder: 'contexto', slug, fm: { persona: slug, escrito: new Date().toISOString().slice(0, 10) }, body: `- ${clean}` });
     saveCorpusCache(); renderAll();
     toast(`📜 al expediente de ${slug} — contexto permanente.`);
@@ -1859,13 +1860,15 @@ function mdRender(src) {
 
 /* ── search (F14 seed) ── */
 /* ── smart search (F14 seed, hardened Jul 2026): accent-insensitive, bilingual
-   EN/ES synonym expansion, per-token scoring across fields, wikilink/persona-
+   EN/ES synonym expansion, light bilingual suffix stemming for within-language
+   morphological variants, per-token scoring across fields, wikilink/persona-
    graph boost, fuzzy fallback for likely typos. All local, no network — the
    corpus is small enough (~2k fichas) that even an unmemoized full pass is
-   sub-millisecond; per-note field normalization is still cached on first
-   touch so repeated keystrokes don't re-normalize long body text. Leandro
-   writes in both languages — "mom" not finding "mamá" was the bug that
-   started this; the fix generalizes far past family terms. */
+   sub-millisecond; per-note field normalization AND per-note stemmed word sets
+   are cached on first touch so repeated keystrokes don't redo that work. Leandro
+   writes in both languages — "mom" not finding "mamá" was the bug that started
+   the synonym dict; "economico" not finding "economicos" was the bug that
+   started the stemmer. Both fixes generalize past their trigger case. */
 const SEARCH_SYNONYMS = (() => {
   const groups = [
     // family
@@ -1874,16 +1877,22 @@ const SEARCH_SYNONYMS = (() => {
     ['grandmother', 'grandma', 'abuela'], ['grandfather', 'grandpa', 'abuelo'],
     ['cousin', 'primo', 'prima', 'primos', 'primas'], ['uncle', 'tio', 'tío'], ['aunt', 'tia', 'tía'],
     ['girlfriend', 'novia'], ['boyfriend', 'novio'],
-    ['friend', 'amigo', 'amiga', 'amigos', 'amigas'], ['family', 'familia'], ['parents', 'padres'],
+    ['friend', 'amigo', 'amiga', 'amigos', 'amigas', 'friends', 'friendly', 'friendship', 'friendships'],
+    ['family', 'familia', 'families', 'familias', 'familiares'],
+    ['parents', 'padres', 'parental', 'parent', 'parenting', 'parented'],
     // school / academia
-    ['school', 'escuela', 'colegio'], ['university', 'college', 'universidad'],
-    ['professor', 'teacher', 'profesor', 'profesora', 'maestro', 'maestra'], ['class', 'clase'],
-    ['exam', 'test', 'examen'], ['homework', 'assignment', 'tarea'], ['essay', 'ensayo'],
-    ['paper', 'trabajo'], ['book', 'libro'], ['reading', 'lectura'],
+    ['school', 'escuela', 'colegio', 'schools', 'schooling'],
+    ['university', 'college', 'universidad', 'colleges', 'universities', 'universidades', 'universitario', 'universitaria', 'universitarios', 'universitarias'],
+    ['professor', 'teacher', 'profesor', 'profesora', 'maestro', 'maestra', 'professors', 'profesores'], ['class', 'clase'],
+    ['exam', 'test', 'examen'],
+    ['homework', 'assignment', 'tarea', 'assign', 'assigns', 'assigning', 'assignments'],
+    ['essay', 'ensayo'],
+    ['paper', 'trabajo'], ['book', 'libro'], ['reading', 'lectura', 'readings'],
     ['grade', 'nota', 'calificacion', 'calificación'],
     // debate
     ['judge', 'juez', 'jueza'], ['round', 'ronda'], ['motion', 'mocion', 'moción'], ['case', 'caso'],
-    ['argument', 'argumento'], ['team', 'equipo'], ['tournament', 'torneo'], ['speech', 'discurso'],
+    ['argument', 'argumento', 'arguments', 'argumentos', 'argumentation', 'argumentativo', 'argumentar', 'argumentacion', 'argumentative', 'argumenta', 'argumentativa', 'argumentativas'],
+    ['team', 'equipo'], ['tournament', 'torneo'], ['speech', 'discurso'],
     // emotions / life
     ['happy', 'feliz', 'contento', 'contenta'], ['sad', 'triste'], ['love', 'amor'],
     ['scared', 'afraid', 'miedo', 'asustado', 'asustada'],
@@ -1893,9 +1902,9 @@ const SEARCH_SYNONYMS = (() => {
     ['study', 'studying', 'studied', 'estudiar', 'estudio', 'estudié', 'estudiando'],
     ['write', 'writing', 'wrote', 'written', 'escribir', 'escribi', 'escribí', 'escribiendo'],
     ['read', 'reading', 'leer', 'lei', 'leí', 'leyendo'],
-    ['think', 'thinking', 'thought', 'pensar', 'pienso', 'pensé', 'pensando'],
+    ['think', 'thinking', 'thought', 'thoughts', 'pensar', 'pienso', 'pensé', 'pensando'],
     ['remember', 'recordar', 'recuerdo', 'recordé'],
-    ['work', 'working', 'worked', 'trabajar', 'trabajo', 'trabajé', 'trabajando'],
+    ['work', 'working', 'worked', 'trabajar', 'trabajo', 'trabajé', 'trabajando', 'trabajadores', 'trabajado', 'trabajos', 'trabaja', 'trabajada', 'trabajadas', 'trabajan'],
     ['travel', 'traveling', 'viajar', 'viaje', 'viajé'],
     ['win', 'won', 'winning', 'ganar', 'gane', 'gané', 'ganando'],
     ['lose', 'lost', 'losing', 'perder', 'perdi', 'perdí', 'perdiendo'],
@@ -1903,9 +1912,246 @@ const SEARCH_SYNONYMS = (() => {
     ['home', 'house', 'casa'], ['city', 'ciudad'], ['country', 'pais', 'país'],
     ['peru', 'perú', 'peruvian', 'peruano', 'peruana'],
     // recurring debate/politics topics
-    ['election', 'eleccion', 'elección', 'elecciones'], ['government', 'gobierno'],
-    ['president', 'presidente', 'presidenta'], ['democracy', 'democracia'],
-    ['economy', 'economia', 'economía'], ['war', 'guerra'], ['climate', 'clima'],
+    ['election', 'eleccion', 'elección', 'elecciones'],
+    ['government', 'gobierno', 'governments', 'governance', 'governing', 'govern', 'governed', 'governors', 'governor', 'governmental', 'governs'],
+    ['president', 'presidente', 'presidenta', 'presidential', 'presidency', 'presidents', 'presidentes', 'presidencial', 'presidencia', 'presidentialism'],
+    ['democracy', 'democracia', 'democratic', 'democratization', 'democracies', 'democrats', 'democratica', 'democratizing', 'democracias', 'democratico', 'democratically', 'democrat', 'democraticos', 'democraticas', 'democratize', 'democratizes', 'democratas', 'democratisation'],
+    ['economy', 'economia', 'economía', 'economic', 'economics', 'economico', 'economica', 'economies', 'economically', 'economicos', 'economicas', 'economicamente', 'economias', 'economists', 'economist'],
+    ['war', 'guerra'], ['climate', 'clima'],
+
+    /* ── derivational-family class (Jul 15 2026 mining pass): same-root noun/adjective/
+       verb families the suffix stemmer can't bridge (single-suffix-strip only), hand-
+       curated word by word against real Spanish/English semantics — NOT a blanket rule.
+       Several near-miss false-friend / polysemy traps were caught and deliberately split
+       apart during review (documented inline): investigación≠investment, competente≠
+       competir, compartir≠comparar, informal≠información, estable≠establish, contestar≠
+       contest, actual(ES: current)≠actual(EN: real), recordar(ES: remember)≠record,
+       churchill≠church, capitalino/capita≠capital, protestante≠protest, constituency≠
+       constitution, securities≠security, importar(trade)≠important, proper≠property,
+       author≠authority, contrarse/contrato/contraste≠contradiction (all share "contra"),
+       centrarse(ES: to focus)≠central. See ~/Projects/archivero/audit.py's
+       derivational-candidate miner (Part 2) for how these were found. ── */
+    ['political', 'politics', 'politica', 'politicians', 'politicas', 'politico', 'politically', 'politicos', 'politician', 'politicized', 'politicamente', 'politicization'],
+    ['national', 'nations', 'nation', 'nationalism', 'nationalization', 'nationalist', 'nationally', 'nationwide', 'nationals', 'nationalizing', 'nationalize', 'nationality', 'nationalists', 'nationhood', 'nationalistic', 'nationalise'],
+    ['institution', 'institutions', 'institutional', 'institucional', 'instituciones', 'institute', 'institutionalized', 'institucion', 'institutionalization', 'instituto', 'institutionally', 'institucionalidad', 'instituted', 'institutos', 'institucionales', 'institutionalism', 'institutionalize'],
+    ['constitution', 'constitutional', 'constitucion', 'constitucional', 'constitutions', 'constitucionales'],
+    ['financial', 'financing', 'finance', 'financiamiento', 'financiera', 'financially', 'financed', 'finances', 'financiar', 'financials', 'financiero', 'financiacion', 'financiado', 'financieras', 'financieros', 'financia', 'financiando'],
+    ['regulation', 'regulatory', 'regulations', 'regulate', 'regulated', 'regulating', 'regulacion', 'regulators', 'regulado', 'regulates', 'regulada', 'regulator', 'regulaciones', 'regulador', 'regulatoria'],
+    ['liberal', 'liberalism', 'liberals', 'liberalize', 'liberalizing', 'liberalization', 'liberales'],
+    ['progressive', 'progress', 'progreso', 'progression', 'progresivo', 'progresiva', 'progressively', 'progressives', 'progresivamente', 'progresar', 'progressivism'],
+    ['corporate', 'corporations', 'corporation', 'corporatism', 'corporaciones', 'corporates'],
+    ['citizens', 'citizen', 'citizenship'],
+    ['ideological', 'ideology', 'ideologically', 'ideologies', 'ideologia', 'ideologias', 'ideologica', 'ideologico'],
+    ['sanctions', 'sanctioned', 'sanction', 'sanctioning'],
+    ['administration', 'administrative', 'administracion', 'administers', 'administra', 'administrations', 'administrators', 'administered', 'administer', 'administrado', 'administering'],
+    ['enforcement', 'enforce', 'enforced', 'enforcing', 'enforceability', 'enforceable', 'enforces'],
+    ['global', 'globalization', 'globally', 'globalizacion', 'globales', 'globalized'],
+    ['central', 'centralized', 'centralization', 'centrales', 'centralizacion', 'centralize', 'centralizan', 'centralizada', 'centrally'],
+
+    ['production', 'produce', 'produces', 'product', 'producing', 'produced', 'products', 'productivity', 'produccion', 'producto', 'productos', 'producers', 'producer', 'productores', 'producir', 'productividad'],
+    ['consumer', 'consumers', 'consumption', 'consumo', 'consume', 'consumir', 'consumed', 'consuming', 'consumes', 'consumerism', 'consumidores', 'consumen'],
+    ['investment', 'investor', 'investors', 'invest', 'invested', 'investing', 'investments'],
+    ['investigate', 'investigation', 'investigations', 'investigative', 'investigated', 'investigacion', 'investigaciones', 'investigar'],
+    ['incentive', 'incentives', 'incentivos', 'incentivo', 'incentivized', 'incentivizes', 'incentivize', 'incentiva', 'incentivizing'],
+    ['profit', 'profitability', 'profitable', 'profits', 'profiting'],
+    ['revenue', 'revenues'],
+    ['industry', 'industrial', 'industries', 'industrialization', 'industria', 'industrias', 'industrializacion'],
+    ['capital', 'capitalism', 'capitalist', 'capitalismo', 'capitalize', 'capitalists', 'capitalista', 'capitales'],
+
+    ['debate', 'debates', 'debater', 'debaters', 'debated'],
+    ['contradiction', 'contradictory', 'contradict', 'contradicts', 'contradicted', 'contradicting', 'contradictions', 'contradiccion', 'contradice', 'contradicen'],
+    ['premise', 'premises', 'premisa', 'premisas'],
+    ['conclusion', 'conclusions', 'concludes', 'concluded', 'conclude', 'conclusiones'],
+    ['consequences', 'consequence', 'consequentialist', 'consequentialism', 'consequential'],
+    ['contest', 'contested', 'contests', 'contestable', 'contesting', 'contestant'],
+    ['utilitarian', 'utilitarianism', 'utilitario', 'utilitarismo', 'utilitarios'],
+    ['rebuttal', 'rebuttals', 'rebutted', 'rebutting'],
+    ['concede', 'conceded', 'concedes', 'conceding', 'conceder'],
+    ['counterfactual', 'counterfactuals', 'countered', 'counters', 'countering', 'counterexample', 'counterpart', 'counterweight', 'counterproductive', 'countermeasures', 'countermodel', 'counterintuitively', 'counterintuitive', 'countervailing', 'counterspace', 'counterterrorism'],
+    ['objection', 'objections', 'objector'],
+    ['objective', 'objectives', 'objectively', 'objectivity', 'objectification'],
+    ['ground', 'grounds', 'grounded', 'grounding', 'groundwork'],
+
+    ['social', 'sociales', 'socially', 'socialmente'],
+    ['community', 'communities', 'communal', 'commune', 'communes'],
+    ['communication', 'communications', 'communicate', 'communicated', 'communicating', 'communicative'],
+    ['culture', 'cultural', 'cultura', 'culturally', 'cultures', 'culturas', 'culturalmente', 'culturales', 'culturalist'],
+    ['religion', 'religious', 'religions', 'religiosity', 'religiosa', 'religiosos', 'religiosas', 'religiously', 'religiones', 'religioso'],
+    ['tradition', 'traditional', 'traditions', 'traditionally'],
+    ['revolution', 'revolucion', 'revolutionary', 'revolutions', 'revoluciones', 'revolucionario'],
+    ['indigenous', 'indigenas', 'indigena'],
+    ['collective', 'collection', 'collected', 'collectively', 'collecting', 'collect', 'collectivism', 'collects', 'collections', 'collectivity', 'collectivization'],
+    ['diverse', 'diversity', 'diversification', 'diversidad', 'diversifying', 'diversify', 'diversified', 'diversos', 'diversifies', 'diversifica'],
+    ['moral', 'morality', 'moralidad', 'moralism'],
+    ['colonial', 'colonies', 'colonialism', 'colonias', 'colonization', 'colonized', 'colonizacion', 'colonists', 'colonizers', 'colonizados', 'colonialismo', 'colonizer', 'colonizadores'],
+    ['minority', 'minorities', 'minorias', 'minoria', 'minoritarios'],
+    ['marginal', 'marginalized', 'margin', 'margins', 'marginally', 'marginalization', 'marginados', 'marginalmente', 'marginar', 'marginadas'],
+    ['exclusive', 'exclusion', 'exclusivity', 'exclusividad', 'exclusively', 'exclusionary', 'exclusivo', 'exclusionario', 'exclusiva', 'exclusivos', 'exclusivamente', 'exclusivism'],
+    ['discrimination', 'discriminacion', 'discriminatory', 'discriminate', 'discriminated', 'discriminar', 'discriminadas', 'discriminado'],
+    ['violence', 'violencia', 'violent', 'violentos', 'violenta', 'violento'],
+    ['population', 'populations', 'populace', 'populated'],
+    ['popular', 'popularity', 'popularidad', 'popularized'],
+    ['autonomy', 'autonomous', 'autonomia', 'autonomously', 'autonomas', 'autonoma'],
+    ['independent', 'independence', 'independently', 'independencia', 'independiente', 'independientemente', 'independientes'],
+    ['individual', 'individuals', 'individuo', 'individually', 'individuos', 'individuality', 'individualized', 'individualism', 'individualismo', 'individuales'],
+    ['companion', 'companero', 'companeros', 'companera'],
+    ['committee', 'committees'],
+    ['commit', 'commitment', 'committed', 'commitments', 'committing', 'commits'],
+
+    ['academic', 'academy', 'academia', 'academics', 'academies', 'academico', 'academica', 'academias', 'academically', 'academicos'],
+    ['professional', 'professionals', 'profesional', 'profesionales', 'profession', 'profesion', 'professions', 'professionalism'],
+    ['structure', 'structural', 'structurally', 'structures', 'structured', 'structuring', 'structuralist', 'structuralism', 'estructura', 'estructural', 'estructurales', 'estructuras', 'estructurar', 'estructuralmente', 'estructurado'],
+    ['system', 'systems', 'systemic', 'systematic', 'systematically', 'systemically'],
+    ['function', 'functions', 'functioning', 'functionally', 'functional', 'functioned', 'functionality'],
+    ['concept', 'concepts', 'concepto', 'conceptions', 'conception', 'conceptual', 'conceptualize', 'conceptos', 'conceptualization', 'concepcion', 'conceptualizacion'],
+    ['complex', 'complexity', 'complejas', 'complejidad', 'complejo', 'complexities'],
+    ['complete', 'completed', 'completo', 'completely', 'completion', 'completa', 'completamente', 'completar', 'completeness', 'completing'],
+    ['complement', 'complementary', 'complementa', 'complementario'],
+    ['separate', 'separation', 'separately', 'separar', 'separated', 'separating', 'separatist', 'separatism', 'separado', 'separatistas', 'separarse', 'separadas', 'separacion'],
+    ['normal', 'normalization', 'normalized', 'normalizes', 'normalize', 'normalizing', 'normaliza', 'normally', 'normalmente', 'normalizacion', 'normales'],
+    ['formal', 'formally', 'formalization', 'formales', 'formalism', 'formalizes', 'formalized', 'formalidad', 'formalizing', 'formalize'],
+    ['describe', 'describes', 'described', 'describing', 'descriptive', 'descripcion', 'describir', 'descriptivo'],
+    ['relationship', 'relationships', 'relations', 'relation', 'relational', 'relaciones', 'relacion', 'relacionado', 'relacionada'],
+    ['transfer', 'transferable', 'transfers', 'transferible', 'transferring', 'transferencia', 'transferred'],
+    ['transformation', 'transform', 'transformacion', 'transformative', 'transformed', 'transforming'],
+    ['transition', 'transitions', 'transitional', 'transicion', 'transicional'],
+    ['conversation', 'conversations', 'conversacion', 'conversaciones'],
+    ['convert', 'conversion', 'converts', 'converting', 'converted', 'convertir', 'conversions', 'conversos'],
+    ['converge', 'convergence', 'converging', 'convergent', 'converges'],
+    ['recognition', 'recognize', 'recognized', 'recognizing', 'recognise', 'recognizes', 'recognizable'],
+    ['perception', 'percepcion', 'perceptions', 'perceptual', 'perceptually'],
+    ['reflection', 'reflect', 'reflects', 'reflecting', 'reflective', 'reflections', 'reflected'],
+    ['implication', 'implica', 'implicit', 'implications', 'implicitly', 'implicita', 'implicated', 'implicancia', 'implicating', 'implican', 'implicancias', 'implicacion'],
+    ['relevant', 'relevance', 'relevante', 'relevancia', 'relevantes'],
+    ['establish', 'established', 'establishment', 'establishing', 'establishes', 'establecidas', 'establecer', 'establecidos', 'estableceria', 'establecimientos'],
+    ['cooperation', 'cooperacion', 'cooperatives', 'cooperative', 'cooperate', 'cooperating', 'cooperativas', 'cooperar'],
+    ['comparative', 'comparison', 'compare', 'comparatively', 'comparativa', 'comparacion', 'comparable', 'comparing', 'compared', 'comparativo', 'comparar', 'comparado', 'comparisons', 'comparatives', 'compara', 'comparan', 'comparators', 'comparando', 'comparator', 'comparativas', 'comparativamente', 'comparably'],
+    ['competition', 'competitive', 'competing', 'compete', 'competencia', 'competitors', 'competitiveness', 'competitions', 'competitividad', 'competitor', 'competitiva', 'competir', 'competitivo', 'competed', 'competes', 'competitivos', 'competiciones', 'competidores', 'competitivas'],
+    ['control', 'controls', 'controlled', 'controlling', 'controla', 'controlar', 'controlada', 'controllable'],
+    ['controversy', 'controversial', 'controversies', 'controversiales'],
+    ['development', 'developing', 'developed', 'develop', 'developmental', 'develops', 'developers', 'developments', 'developer', 'desarrollo', 'desarrollar', 'desarrollado', 'desarrollada', 'desarrolla', 'desarrollados', 'desarrollarse', 'desarrollan'],
+    ['dominance', 'dominant', 'dominated', 'dominate', 'dominates', 'dominante', 'domination', 'domina'],
+    ['influence', 'influencia', 'influencers', 'influenced', 'influential', 'influencer', 'influences', 'influencing', 'influenceable'],
+    ['position', 'positions', 'positioned', 'positioning', 'positionality', 'positional'],
+    ['positive', 'positively', 'positivo', 'positiva', 'positivos', 'positivas'],
+    ['principle', 'principles', 'principio', 'principios'],
+    ['defend', 'defending', 'defends', 'defended', 'defender', 'defenders', 'defendiendo'],
+    ['delegate', 'delegates', 'delegation', 'delegacion', 'delegados', 'delegations', 'delegating', 'delegated', 'delegaciones'],
+    ['expectation', 'expectations', 'expected', 'expect', 'expectativa', 'expectativas', 'expectancy', 'expects', 'expecting'],
+    ['prevent', 'prevention', 'prevents', 'preventing', 'preventive', 'prevencion', 'prevented', 'preventable', 'preventiva', 'prevenir', 'prevenciones'],
+    ['protection', 'protect', 'protecting', 'proteccion', 'protections', 'protects', 'protected', 'protective', 'protectionism', 'protectionist', 'protector'],
+    ['benefit', 'benefits', 'beneficios', 'beneficio', 'beneficial', 'benefiting', 'benefician', 'beneficia', 'beneficiar', 'benefited', 'beneficiaries', 'beneficioso', 'beneficiosos', 'beneficiosa'],
+    ['opposition', 'opposing', 'opposite'],
+    ['question', 'questions', 'questioning', 'questioned', 'questionnaire'],
+    ['document', 'documento', 'documents', 'documentation', 'documented', 'documentos', 'documenting'],
+    ['research', 'researchers', 'researched', 'researching', 'researcher'],
+    ['project', 'projects'],
+    ['projection', 'projected', 'projections'],
+    ['information', 'informacion', 'informed', 'inform', 'informational', 'informar', 'informarse'],
+    ['access', 'accessible', 'accessibility', 'accessing', 'accessed'],
+    ['american', 'america', 'americans', 'americas', 'americanos', 'americano'],
+    ['support', 'supporting', 'supports', 'supported', 'supporters', 'supportive', 'supporter'],
+    ['specific', 'specifically', 'specifics', 'specified', 'specificity', 'specify'],
+    ['practice', 'practical', 'practica', 'practices', 'practitioners', 'practicas', 'practicing', 'practicos', 'practically', 'practico', 'practicar', 'practicality', 'practiced', 'practicamente'],
+    ['strategy', 'strategic', 'strategies', 'strategically'],
+    ['dependency', 'depends', 'depende', 'dependent', 'dependence', 'dependencia', 'depend', 'depending', 'dependen', 'depender', 'depended', 'dependiente', 'dependientes'],
+    ['experience', 'experiences', 'experiencia', 'experienced', 'experiencias', 'experiencing', 'experiential'],
+    ['experiment', 'experimental', 'experimentation', 'experiments', 'experimentados', 'experimentacion', 'experimenta', 'experimentos'],
+    ['interest', 'interests', 'intereses', 'interested', 'interes', 'interesting'],
+    ['company', 'companies'],
+    ['resource', 'resources', 'resourced', 'resourcing'],
+    ['justice', 'justicia'],
+    ['intervention', 'interventions', 'intervene', 'intervencion', 'intervening', 'intervenciones', 'intervenir', 'interventionist', 'intervenes', 'interviene', 'interventionism'],
+    ['interview', 'interviews', 'interviewer', 'interviewee', 'interviewed'],
+    ['different', 'difference', 'differently', 'differences', 'differ', 'differs', 'differentiation', 'differential', 'differing', 'differentiate', 'differentiated', 'differentiator', 'differentiating', 'differentiates'],
+    ['capacity', 'capacidad', 'capacidades', 'capacitacion', 'capacities', 'capacitado', 'capacitados'],
+    ['related', 'relate', 'relates'],
+    ['universal', 'universally', 'universalize', 'universales', 'universalizable', 'universalization', 'universality', 'universalizability'],
+    ['proposal', 'proposition', 'proposed', 'proposals', 'proposes', 'proposicion', 'proposing', 'propose', 'propositions'],
+    ['action', 'actions', 'actionable'],
+    ['material', 'materials', 'materially', 'materiales', 'materia', 'materialmente', 'materialidad', 'materialism'],
+    ['materialize', 'materializes', 'materializing', 'materializa', 'materializar'],
+    ['effect', 'effects', 'effective', 'effectively', 'effectiveness'],
+    ['authority', 'authoritarian', 'authorities', 'authoritarianism', 'authoritative', 'authorized', 'authorization'],
+    ['author', 'authored', 'authors', 'authorship', 'authorial'],
+    ['education', 'educational', 'educated', 'educativo', 'educativa', 'educators', 'educate', 'educativas', 'educativos'],
+    ['important', 'importa', 'importance', 'importante', 'importancia', 'importantes'], // NOTE: 'importar'/'importan' excluded — confirmed genuinely ambiguous in corpus (both "sin importar"=regardless AND "importar petróleo"=to import oil)
+    ['import', 'imports', 'imported', 'importing', 'importaciones'],
+    ['decision', 'decisions', 'decisiones', 'decisive'],
+    ['organization', 'organized', 'organizations', 'organizing', 'organizacion', 'organize', 'organizaciones', 'organizational', 'organizers', 'organizado', 'organizada', 'organizer', 'organizadas', 'organizes', 'organizativa'],
+    ['alternative', 'alternatives', 'alternativa', 'alternativas', 'alternate', 'alternativo', 'alternatively', 'alternativos'],
+    ['process', 'proceso', 'processing', 'processes', 'procesos', 'procesar', 'processed', 'processor'],
+    ['society', 'societal', 'societies'],
+    ['security', 'securing'],
+    ['private', 'privatization', 'privately', 'privatized', 'privatizing'],
+    ['leader', 'leadership', 'leaders'],
+    ['program', 'programs', 'programa', 'programas', 'programme'],
+    ['representation', 'representative', 'represented', 'representing', 'representacion', 'represent', 'representatives', 'representativa', 'representa', 'representan', 'representantes', 'representar', 'representadas', 'representativo'],
+    ['possible', 'possibly', 'possibility', 'possibilities'],
+    ['context', 'contexto', 'contexts', 'contextos', 'contextual', 'contextualizacion', 'contextualization'],
+    ['standard', 'standards', 'standardized', 'standardize'],
+    ['health', 'healthcare', 'healthy', 'healthier'],
+    ['original', 'origin', 'origins', 'originalism', 'originally', 'originated', 'originate', 'originarios', 'originales'],
+    ['require', 'requires', 'requirements', 'required', 'requiring', 'requirement'],
+    ['distinction', 'distinct', 'distinguishes', 'distintas', 'distinguishing', 'distinta', 'distintos', 'distincion', 'distinto', 'distinguish', 'distinguished', 'distingue', 'distinguir', 'distinctive', 'distinctions', 'distinctly', 'distinciones'],
+    ['explicit', 'explicitly', 'explica', 'explicito', 'explicar', 'explicita', 'explicitamente', 'explicaciones', 'explicado', 'explicacion', 'explican', 'explicando'],
+    ['legitimacy', 'legitimate', 'legitimidad', 'legitimizes', 'legitimizing', 'legitima', 'legitimo', 'legitimization', 'legitimize', 'legitimar', 'legitimized', 'legitimately'],
+    ['region', 'regional', 'regions', 'regionales', 'regiones', 'regionalism', 'regionally'],
+    ['justify', 'justification', 'justified', 'justifies', 'justificacion', 'justificar', 'justifying', 'justifica', 'justifiable', 'justificado', 'justifications', 'justificadora'],
+    ['content', 'contenido'],
+    ['environmental', 'environment', 'environments', 'environmentally', 'environmentalists', 'environmentalism', 'environmentalist'],
+    ['pressure', 'pressures', 'pressured', 'pressuring'],
+    ['partner', 'partners', 'partnerships', 'partnership', 'partnering'],
+    ['reform', 'reforms', 'reforma', 'reformas', 'reformation', 'reformed', 'reforming', 'reformist'],
+    ['corruption', 'corrupcion', 'corrupt', 'corruptos', 'corrupted', 'corrupto', 'corruptible', 'corrupting', 'corruptas'],
+    ['reference', 'referencia', 'references', 'referenced', 'referencias', 'referencing', 'referente'],
+    ['critical', 'criticism', 'critica', 'criticized', 'criticize', 'criticas', 'critico', 'critics', 'critically', 'criticar', 'criticisms', 'criticizing', 'criticos'],
+    ['consent', 'consentimiento', 'consented', 'consenting', 'consensual', 'consents'],
+    ['consensus', 'consenso'],
+    ['continue', 'continued', 'continuous', 'continuing', 'continues', 'continuity', 'continuation', 'continua', 'continuo', 'continuidad', 'continuously'],
+    ['reduce', 'reduces', 'reduced', 'reducen'],
+    ['preference', 'preferences', 'prefer', 'prefers', 'preferable', 'preferred', 'preferencia', 'preferible', 'preferir', 'preferiria', 'preferring', 'preferencias', 'preferential', 'preferability'],
+    ['present', 'presence', 'presentation', 'presencia', 'presented', 'presenta', 'presente', 'presenting', 'presents', 'presentar', 'presencial', 'presentacion', 'presentes', 'presentado'],
+    ['service', 'services', 'servicio', 'servicios'],
+    ['operation', 'operational', 'operations', 'operative', 'operating', 'operate', 'operates', 'operativo', 'operativa', 'operator', 'operativos', 'operated', 'operators', 'operatives', 'operationalized', 'operationally'],
+    ['outcome', 'outcomes'],
+    ['engagement', 'engage', 'engaged', 'engages'],
+    ['vulnerable', 'vulnerability', 'vulnerables', 'vulnerabilidad', 'vulnerabilities', 'vulneracion'],
+    ['analogy', 'analogia', 'analogized', 'analogous', 'analogies', 'analogias', 'analogo', 'analogizes', 'analog'],
+    ['innovation', 'innovators', 'innovacion', 'innovative', 'innovate', 'innovating', 'innovations', 'innovator'],
+    ['characterization', 'character', 'characterized', 'characters', 'characteristics', 'characterizing', 'characterize', 'characterizations', 'characteristic', 'characterizes', 'characterisation'],
+    ['accountability', 'accountable'],
+    ['figure', 'figures', 'figured'],
+    ['understanding', 'understand', 'understood', 'understands', 'understandable'],
+    ['obligation', 'obligations', 'obligacion', 'obliga', 'obligated', 'obligatory', 'obligatorio', 'obligatoria', 'obligados', 'obligate', 'obligar', 'obligado'],
+    ['condition', 'conditions', 'conditional', 'conditioned', 'conditionality', 'conditioning'],
+    ['choice', 'choices'],
+    ['existence', 'existe', 'existential', 'existen', 'existed', 'existentes', 'existente', 'existencia', 'existing', 'existir', 'existiendo', 'existiera'],
+    ['success', 'successful', 'successor', 'succession', 'successes', 'successors', 'successfully'],
+    ['report', 'reporting', 'reportedly', 'reports', 'reported', 'reporters', 'reportes'],
+    ['definition', 'definitions', 'definicion', 'definitional', 'definiciones', 'defining', 'definitionally', 'definir', 'definido'],
+    ['attack', 'attacks', 'attacking', 'attacked', 'attackers', 'attacker'],
+    ['evidence', 'evidencia', 'evidently', 'evidentiary', 'evidenced', 'evident', 'evidentialist'],
+    ['necessary', 'necessarily', 'necessity', 'necessities', 'necessitates'],
+    ['application', 'applicant', 'applications', 'applicable', 'applicants', 'applicability'],
+    ['sector', 'sectors', 'sectores', 'sectoral'],
+    ['europe', 'european', 'europea', 'europeo', 'europeas', 'europeos', 'europeans'],
+    ['accept', 'acceptance', 'accepting', 'accepted', 'accepts', 'acceptable'],
+    ['explain', 'explained', 'explains', 'explaining', 'explainer', 'explainers'],
+    // caught by archivero's automated derivational-candidate miner (Part 2) re-checking
+    // this same pass — genuinely safe single-concept families dropped by hand-transcription
+    // during the manual sweep above, not new semantic judgment calls.
+    ['source', 'sources', 'sourced'],
+    ['impact', 'impacts', 'impacto', 'impactos', 'impacted', 'impactful', 'impacting', 'impacta', 'impactar'],
+    ['technique', 'technical', 'technically', 'techniques'],
+    ['history', 'historical', 'historically', 'historia', 'historica', 'historico', 'historic', 'historicos', 'historicamente', 'histories', 'historicas', 'historian', 'historial', 'historias'],
+    ['policy', 'policymakers', 'policymaking'],
+    ['directly', 'direct', 'directed', 'directa', 'direction', 'director', 'directamente', 'directo', 'directors', 'directions', 'directive', 'directos', 'directs', 'directing'],
+    ['change', 'changes', 'changed', 'changeable'],
+    ['narrative', 'narratives', 'narrativa', 'narrativas', 'narrativo', 'narrator', 'narrate', 'narrated', 'narratively', 'narrating', 'narrates'],
+    ['public', 'publica', 'publico', 'publicas', 'publicos', 'publicly', 'publics'],
+    ['problem', 'problems', 'problema', 'problemas', 'problematic', 'problematicas', 'problematica', 'problematico', 'problematizacion'],
+    ['identity', 'identify', 'identified', 'identidad', 'identical', 'identities', 'identifying', 'identification', 'identificar', 'identifies', 'identifiable', 'identificacion', 'identitario', 'identifica', 'identifican', 'identificadas', 'identically', 'identitaria', 'identificados', 'identifiers'],
   ];
   const map = {};
   for (const g of groups) for (const w of g) map[w] = g;
@@ -1916,13 +2162,57 @@ function _stripAccents(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, ''); }
 function _norm(s) { return _stripAccents(String(s || '').toLowerCase()); }
 function _expandToken(tok) { const syn = SEARCH_SYNONYMS[tok]; return syn ? syn.map(_norm) : [tok]; }
 
+/* ── light bilingual stemmer (Jul 2026) ──
+   Handles WITHIN-language morphological variants (economico/economicos/economica,
+   government/governmental-ish derivational families) that SEARCH_SYNONYMS doesn't
+   cover — that dictionary is for cross-language concept pairs, not inflection.
+   Deliberately NOT a full Porter/Snowball stemmer: strips at most ONE suffix per
+   word (no cascading), tries longer/more-specific suffixes before short generic
+   ones, and only commits to a stripped form if the remaining stem is still
+   >= MIN_STEM_LEN chars. That guard is the whole safety story here — it's the
+   same class of bug as the "tio"-inside-"gestion" substring collision fixed
+   earlier this session: an unguarded stem like "cas" (from "casa") would
+   spuriously unify with "casado"/"casual"/"castillo". With the guard, "casa"
+   and "caso" (both 4 chars) never strip at all and stay distinct, while
+   "casa"/"casas" and "caso"/"casos" still correctly unify via the plural "-s".
+   Comparison MUST happen on tokenized whole words (stem-equality via Set
+   membership, see _noteSearchFields), never as a regex prefix match against
+   unsegmented text — a stem is not a complete word, so \bstem\w*\b would
+   reopen the exact substring hole the word-boundary fix just closed. */
+const MIN_STEM_LEN = 4;
+const _STEM_SUFFIXES = [
+  // Spanish: derivational (nouns/adjectives) — ción/ciones, mente, ismo/ista,
+  // ivo/iva, ico/ica, dad — then generic plural -s/-es, then gender -o/-a.
+  'ciones', 'mente', 'istas', 'ismos', 'dades',
+  'ivas', 'ivos', 'icas', 'icos', 'cion', 'ista', 'ismo', 'dad', 'iva', 'ivo', 'ica', 'ico',
+  // English: derivational — tion/tions, ing, ed, ly, ive, ic/ical, ism, ist.
+  'tions', 'tion', 'ical', 'ing', 'ive', 'ism', 'ist', 'ed', 'ic', 'ly',
+  // shared plural / gender — most generic, tried last (highest collision risk).
+  'es', 'as', 'os', 'a', 'o', 's',
+].sort((a, b) => b.length - a.length);
+
+function _stem(word) {
+  for (const suf of _STEM_SUFFIXES) {
+    if (word.length - suf.length >= MIN_STEM_LEN && word.endsWith(suf)) return word.slice(0, -suf.length);
+  }
+  return word;
+}
+
+function _wordsOf(s) { return s.split(/[^a-z0-9]+/).filter(t => t.length > 1); }
+
 function _noteSearchFields(n) {
   if (n._sf) return n._sf;
+  const title = _norm(n.fm.title || n.slug);
+  const tags = _norm(Array.isArray(n.fm.tags) ? n.fm.tags.join(' ') : '');
+  const body = _norm(n.body);
   n._sf = {
-    title: _norm(n.fm.title || n.slug),
-    tags: _norm(Array.isArray(n.fm.tags) ? n.fm.tags.join(' ') : ''),
-    body: _norm(n.body),
+    title, tags, body,
     wikilinks: (n.body.match(/\[\[([^\]|#]+)/g) || []).map(w => _norm(w.slice(2))),
+    // stemmed word SETS, built from tokenized words (not the raw strings above) —
+    // equality-checked against stemmed query variants, never regex-matched.
+    titleStems: new Set(_wordsOf(title).map(_stem)),
+    tagsStems: new Set(_wordsOf(tags).map(_stem)),
+    bodyStems: new Set(_wordsOf(body).map(_stem)),
   };
   return n._sf;
 }
@@ -1941,25 +2231,52 @@ function _levenshteinLE2(a, b) {
   return dp[a.length][b.length];
 }
 
+function _escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
 function searchNotes(q) {
   const rawTokens = _norm(q).split(/[^a-z0-9]+/).filter(t => t.length > 1);
   if (!rawTokens.length) return [];
   const candidates = corpus.notes.filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
-  const tokenGroups = rawTokens.map(_expandToken);
+  // word-boundary regex per variant, compiled once per search (not per note) — a plain
+  // .includes() let short variants match mid-word ("tio" inside "gestion", "caso" inside
+  // "fracaso"), flooding results with unrelated notes on common words
+  // each group also carries stemmed forms of its variants, checked as a fallback
+  // via Set membership against the note's tokenized-word stems (never as a regex) —
+  // see _stem's doc comment for why that distinction matters
+  const tokenGroups = rawTokens.map(tok => {
+    const variants = _expandToken(tok);
+    return {
+      regexes: variants.map(v => new RegExp('\\b' + _escapeRegExp(v) + '\\b')),
+      stems: [...new Set(variants.map(_stem))],
+    };
+  });
   const fullPhrase = _norm(q);
 
   const results = candidates.map(n => {
     const f = _noteSearchFields(n);
     let score = 0, tokensHit = 0;
     for (const group of tokenGroups) {
-      let hit = false;
-      for (const variant of group) {
-        if (f.title.includes(variant)) { score += 10; hit = true; }
-        if (f.tags.includes(variant)) { score += 5; hit = true; }
-        if (f.wikilinks.some(w => w.includes(variant))) { score += 6; hit = true; }
-        if (f.body.includes(variant)) { score += 1; hit = true; }
+      // once per FIELD per group, not per variant — a group with more synonyms
+      // (e.g. 5 family-term variants) shouldn't outscore a group with fewer
+      // just because more of its variants happen to appear
+      let titleHit = false, tagsHit = false, wikiHit = false, bodyHit = false;
+      for (const re of group.regexes) {
+        if (!titleHit && re.test(f.title)) titleHit = true;
+        if (!tagsHit && re.test(f.tags)) tagsHit = true;
+        if (!wikiHit && f.wikilinks.some(w => re.test(w))) wikiHit = true;
+        if (!bodyHit && re.test(f.body)) bodyHit = true;
       }
-      if (hit) tokensHit++;
+      // stem fallback — morphological variants the regex pass (exact words +
+      // synonym dict) didn't catch, e.g. "economico" query hitting a body
+      // that only contains "economicos"/"economica"
+      if (!titleHit && group.stems.some(s => f.titleStems.has(s))) titleHit = true;
+      if (!tagsHit && group.stems.some(s => f.tagsStems.has(s))) tagsHit = true;
+      if (!bodyHit && group.stems.some(s => f.bodyStems.has(s))) bodyHit = true;
+      if (titleHit) score += 10;
+      if (tagsHit) score += 5;
+      if (wikiHit) score += 6;
+      if (bodyHit) score += 1;
+      if (titleHit || tagsHit || wikiHit || bodyHit) tokensHit++;
     }
     if (rawTokens.length > 1 && f.title.includes(fullPhrase)) score += 8;       // exact-phrase bonus
     if (rawTokens.length > 1 && f.body.includes(fullPhrase)) score += 3;
