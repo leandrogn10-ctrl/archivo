@@ -2153,6 +2153,15 @@ const SEARCH_SYNONYMS = (() => {
     ['public', 'publica', 'publico', 'publicas', 'publicos', 'publicly', 'publics'],
     ['problem', 'problems', 'problema', 'problemas', 'problematic', 'problematicas', 'problematica', 'problematico', 'problematizacion'],
     ['identity', 'identify', 'identified', 'identidad', 'identical', 'identities', 'identifying', 'identification', 'identificar', 'identifies', 'identifiable', 'identificacion', 'identitario', 'identifica', 'identifican', 'identificadas', 'identically', 'identitaria', 'identificados', 'identifiers'],
+    // Jul 25 2026 pass: accepted mechanism + personal (2 of 10 mined candidates; the
+    // other 8 were rejected at the sala as prefix-collisions or polysemy — construction
+    // ≠ constraint, international ≠ internal ≠ internet, response ≠ responsibility,
+    // general(broad) ≠ generate, actual ≠ actualización, + should/through stopwords).
+    // personnel (staff) and personaje (fictional character) are a different sense;
+    // persona/personas are OMITTED on purpose — they're the La Red tag, so bridging
+    // them into search would flood results with people-notes.
+    ['mechanism', 'mechanisms', 'mechanical', 'mechanics', 'mechanization', 'mechanized', 'mechanically', 'mechanize', 'mechanic', 'mechanizes', 'mecanismo', 'mecanismos', 'mecanico', 'mecanica', 'mecanizacion'],
+    ['personal', 'person', 'persons', 'personally', 'personales', 'personality', 'personalidad', 'personhood', 'personalized', 'personalizada', 'personalist'],
   ];
   const map = {};
   for (const g of groups) for (const w of g) map[w] = g;
