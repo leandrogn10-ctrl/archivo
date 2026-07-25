@@ -247,6 +247,14 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .claude-panel .panel-body.thinking::before { content: '✦'; color: var(--c-dusty-fg); animation: pulse 1.2s infinite; font-style: normal; }
 .claude-panel.error .panel-body { color: var(--danger); font-size: 12px; }
 .claude-panel .panel-foot { padding: 8px 16px 12px; font-size: 10px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line-soft); }
+/* ── ask-the-archive (RAG Q&A) ── */
+.ask-btn { color: var(--c-dusty-fg); }
+.ask-btn:hover { color: var(--accent); background: var(--paper); }
+.claude-panel .panel-body .ask-answer { white-space: pre-wrap; }
+.claude-panel .panel-body .ask-cites { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; }
+.ask-cites-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-faint); margin-bottom: 2px; }
+.ask-cite { text-align: left; font-family: inherit; font-size: 11.5px; line-height: 1.4; color: var(--ink-dim); padding: 3px 6px; border-radius: 2px; border-left: 2px solid var(--c-dusty-bd); cursor: pointer; transition: color 0.12s, background 0.12s, border-color 0.12s; }
+.ask-cite:hover { color: var(--ink); background: var(--paper); border-left-color: var(--accent); }
 
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--paper-hi); border: 1px solid var(--accent-soft); color: var(--ink); padding: 10px 18px; font-size: 12px; border-radius: 2px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 1000; max-width: 80vw; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
@@ -269,6 +277,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
   .brand h1 { font-size: 28px; }
   .tagline { display: none; }
   .actions { gap: 6px; flex-wrap: nowrap; }
+  .ask-btn .btn-label { display: none; }
   .sync-pip { padding: 4px 8px; font-size: 9px; }
   .sync-pip .dot { width: 5px; height: 5px; }
 
@@ -541,6 +550,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
         <input type="text" id="search-input" placeholder="buscar en el archivo…" autocomplete="off">
         <span class="search-hint">/</span>
       </div>
+      <button class="ghost-btn ask-btn" id="ask-btn" title="preguntarle al archivo (?)">✦<span class="btn-label"> preguntar</span></button>
       <button class="ghost-btn" id="refresh-btn" title="traer la bodega de nuevo">⟳</button>
       <button class="sync-pip" id="sync-pip" title="cloud sync — click for settings"><span class="dot"></span><span id="sync-pip-label">offline</span></button>
     </div>
@@ -611,9 +621,9 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
           <label class="span-2">Anthropic API key<input type="password" id="claude-api-key" placeholder="sk-ant-..." autocomplete="off"></label>
           <label>Model
             <select id="claude-model">
-              <option value="claude-haiku-4-5-20251001">Haiku — fast & cheap</option>
-              <option value="claude-sonnet-4-6">Sonnet — balanced</option>
-              <option value="claude-opus-4-8">Opus — best, slowest</option>
+              <option value="claude-opus-5">Opus — best, slowest</option>
+              <option value="claude-sonnet-5">Sonnet — balanced</option>
+              <option value="claude-haiku-4-5">Haiku — fast & cheap</option>
             </select>
           </label>
           <label>&nbsp;
@@ -725,7 +735,13 @@ function migrate(s) {
   s.settings = s.settings || {};
   s.settings.claudeRules = s.settings.claudeRules ?? DEFAULT_CLAUDE_RULES;
   s.settings.sync = s.settings.sync || { enabled: false, githubPat: null, gistId: null, lastSyncedAt: null };
-  s.settings.claude = s.settings.claude || { enabled: false, apiKey: null, model: 'claude-haiku-4-5-20251001' };
+  s.settings.claude = s.settings.claude || { enabled: false, apiKey: null, model: 'claude-opus-5' };
+  // normalize legacy / date-suffixed model IDs to the current same-or-newer option in the tier
+  s.settings.claude.model = ({
+    'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
+    'claude-sonnet-4-6': 'claude-sonnet-5',
+    'claude-opus-4-8': 'claude-opus-5',
+  })[s.settings.claude.model] || s.settings.claude.model || 'claude-opus-5';
   s.settings.theme = s.settings.theme || 'archivo';
   s.lastModified = s.lastModified || Date.now();
   return appMigrate(s);
@@ -789,7 +805,7 @@ const settingsModal = document.getElementById('settings-modal');
 function openSettings() {
   document.getElementById('claude-rules').value = state.settings.claudeRules || DEFAULT_CLAUDE_RULES;
   document.getElementById('claude-api-key').value = state.settings.claude.apiKey || '';
-  document.getElementById('claude-model').value = state.settings.claude.model || 'claude-haiku-4-5-20251001';
+  document.getElementById('claude-model').value = state.settings.claude.model || 'claude-opus-5';
   document.getElementById('sync-pat').value = state.settings.sync.githubPat || '';
   document.getElementById('sync-gist-id').value = state.settings.sync.gistId || '';
   document.getElementById('corpus-repo').value = state.corpus.repo;
@@ -982,6 +998,75 @@ function showClaudePanel({ title, status, text }) {
     `<span>${state.settings.claude.model.split('-')[1]}</span><span>${status === 'thinking' ? '•' : new Date().toLocaleTimeString()}</span>`;
 }
 document.getElementById('claude-panel-close').addEventListener('click', () => { document.getElementById('claude-panel').classList.add('hidden'); });
+
+/* ── ask-the-archive: RAG Q&A over the corpus ───────────────────────────────
+   retrieval reuses searchNotes (the reading room's own ranker) → a numbered
+   context block of the top fichas → Claude answers ONLY from them → the panel
+   shows the answer plus clickable citations back to each consulted ficha.
+   The app still never WRITES note content; this only reads the cache. */
+const ASK_MAX_FICHAS = 6;          // retrieval depth fed to Claude
+const ASK_BODY_CHARS = 1100;       // per-ficha body budget in the context block
+const ASK_SYSTEM =
+  "You are El Archivero, the archivist of Leandro's private knowledge corpus (El Archivo). " +
+  "Answer the question USING ONLY the numbered fichas given as context.\n" +
+  "- Ground every claim in the fichas and cite them inline by number, e.g. [1], [3].\n" +
+  "- If the fichas do not cover the question, say so plainly. Never invent facts or citations.\n" +
+  "- A ficha tagged provenance:external/ai/hybrid is NOT Leandro's own thinking — attribute it " +
+  "as an outside or AI piece kept in the archive, never as his own view.\n" +
+  "- Reply in the same language as the question (Spanish or English). Be dry, literate and concise " +
+  "— a few short paragraphs at most.";
+
+function buildAskContext(hits) {
+  return hits.map((n, i) => {
+    const prov = n.fm.provenance && n.fm.provenance !== 'human' ? ` · provenance:${n.fm.provenance}` : '';
+    const body = String(n.body || '').trim().slice(0, ASK_BODY_CHARS);
+    return `[${i + 1}] «${n.fm.title || n.slug}» (${n.folder}${prov})\n${body}`;
+  }).join('\n\n---\n\n');
+}
+
+function renderAskAnswer(q, answer, hits) {
+  const panel = document.getElementById('claude-panel');
+  panel.classList.remove('hidden', 'error');
+  document.getElementById('claude-panel-title').textContent = q;
+  const body = document.getElementById('claude-panel-body');
+  body.className = 'panel-body';
+  const cites = hits.map((n, i) =>
+    `<button class="ask-cite" data-open="${escapeHtml(n.slug)}">[${i + 1}] ${escapeHtml(n.fm.title || n.slug)}</button>`).join('');
+  body.innerHTML = `<div class="ask-answer">${escapeHtml(answer)}</div>` +
+    `<div class="ask-cites"><span class="ask-cites-label">fichas consultadas</span>${cites}</div>`;
+  body.querySelectorAll('.ask-cite').forEach(b => b.addEventListener('click', () => {
+    view = { mode: 'note', drawer: view.drawer, slug: b.dataset.open, q: '' };
+    renderAll(); window.scrollTo({ top: 0 });
+    panel.classList.add('hidden');
+  }));
+  document.getElementById('claude-panel-foot').innerHTML =
+    `<span>${escapeHtml((state.settings.claude.model || '').split('-')[1] || 'claude')}</span><span>${new Date().toLocaleTimeString()}</span>`;
+}
+
+async function askArchivo() {
+  if (!corpus) { toast('trae la bodega primero (⟳).', true); return; }
+  if (!isClaudeEnabled()) { toast('activa Claude en settings (pega tu API key).', true); openSettings(); return; }
+  const q = await askPrompt('Preguntarle al archivo', 'Claude responde solo desde tus fichas — y cita cuáles usó.');
+  if (!q) return;
+  const hits = searchNotes(q).slice(0, ASK_MAX_FICHAS);
+  if (!hits.length) {
+    showClaudePanel({ title: q, status: 'error', text: 'No hay fichas en la bodega que toquen eso. El archivo solo responde desde lo que guarda.' });
+    return;
+  }
+  showClaudePanel({ title: q, status: 'thinking', text: `leyendo ${hits.length} ficha${hits.length === 1 ? '' : 's'}…` });
+  try {
+    const answer = await callClaude({
+      system: ASK_SYSTEM,
+      userMessage: `Fichas del archivo (contexto):\n\n${buildAskContext(hits)}\n\n———\n\nPregunta: ${q}`,
+      maxTokens: 800,
+    });
+    renderAskAnswer(q, answer, hits);
+  } catch (e) {
+    console.error('ask', e);
+    showClaudePanel({ title: q, status: 'error', text: 'Claude no respondió: ' + e.message });
+  }
+}
+document.getElementById('ask-btn').addEventListener('click', askArchivo);
 
 /* ── export / import (shell verbatim) ── */
 document.getElementById('export-btn').addEventListener('click', () => {
@@ -2324,9 +2409,11 @@ searchInput.addEventListener('input', () => {
   }, 120);
 });
 document.addEventListener('keydown', e => {
-  if (e.key === '/' && document.activeElement !== searchInput && !settingsModal.open && !promptModal.open
-      && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+  if (e.key === '/' && document.activeElement !== searchInput && !settingsModal.open && !promptModal.open && !typing) {
     e.preventDefault(); searchInput.focus();
+  } else if (e.key === '?' && !settingsModal.open && !promptModal.open && !typing) {
+    e.preventDefault(); askArchivo();
   }
 });
 
