@@ -417,6 +417,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .stamp.st-creativo { color: var(--accent-soft); }
 .stamp.st-otro     { color: var(--ink-faint); }
 .stamp.st-ajeno    { color: var(--gold); border-style: dashed; transform: rotate(1.6deg); }
+.stamp.st-ia       { color: var(--ink-dim); border-style: dotted; transform: rotate(-1.4deg); }
 .stamp-pair { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
 
 /* search box — the catalogue drawer */
@@ -1776,7 +1777,7 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', hitos: 'Hitos', personas: 'Personas (La Red)', auditoria: 'Sala de auditoría' };
+const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', ajeno: 'Ajeno (otras plumas)', hitos: 'Hitos', personas: 'Personas (La Red)', auditoria: 'Sala de auditoría' };
 const HIDDEN_FOLDERS = new Set(['contexto']);          // expedientes render inline on persona folios, never as cards
 const TICKET_FOLDERS = new Set(['auditoria']);         // work tickets: own drawer, excluded from Todo + search
 const TYPE_STAMP = {
@@ -2339,8 +2340,9 @@ function cardHtml(n, q, deskIdx = -1) {
     ? `${n.fm.redo ? `<span class="redo-flag" title="${escapeHtml(String(n.fm.redo))}">↺ redo</span> ` : ''}${priv} <span class="shelf-hint">→ ${escapeHtml(SHELVES.includes(n.fm.shelf) ? String(n.fm.shelf) : '¿estante?')}</span>`
     : `${priv} ${escapeHtml(n.folder)}`;
   const ajeno = n.fm.provenance === 'external' ? '<span class="stamp st-ajeno" title="de otra pluma — nunca cuenta como pensamiento de Leandro">ajeno</span>' : '';
+  const ia = n.fm.provenance === 'ai' ? '<span class="stamp st-ia" title="hecho por una máquina — nunca cuenta como pensamiento de Leandro">IA</span>' : '';
   return `<div class="card${desk && deskIdx === deskSel ? ' desk-sel' : ''}${desk && n.fm.redo ? ' espera' : ''}" data-open="${escapeHtml(n.slug)}"${desk ? ` data-idx="${deskIdx}"` : ''}>
-    <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair">${ajeno}<span class="stamp ${stampCls}">${escapeHtml(TYPE_ES[type] || type)}</span></span></div>
+    <div class="card-top"><h3>${escapeHtml(n.fm.title || n.slug)}</h3><span class="stamp-pair">${ajeno}${ia}<span class="stamp ${stampCls}">${escapeHtml(TYPE_ES[type] || type)}</span></span></div>
     <div class="excerpt">${escapeHtml(excerptOf(n, q))}</div>
     ${desk && n.fm.revisor_nota ? `<div class="revisor-note${n.fm.revisor === 'rechazar' ? ' rej' : ''}">⚖ revisor${n.fm.revisor ? ` [${escapeHtml(String(n.fm.revisor))}]` : ''}: ${escapeHtml(String(n.fm.revisor_nota))}</div>` : ''}
     <div class="card-foot"><span>${escapeHtml(String(n.fm.date || ''))}</span><span>${foot}</span></div>
