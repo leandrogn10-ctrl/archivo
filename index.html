@@ -2157,14 +2157,19 @@ const SEARCH_SYNONYMS = (() => {
     // other 8 were rejected at the sala as prefix-collisions or polysemy — construction
     // ≠ constraint, international ≠ internal ≠ internet, response ≠ responsibility,
     // general(broad) ≠ generate, actual ≠ actualización, + should/through stopwords).
-    // personnel (staff) and personaje (fictional character) are a different sense;
-    // persona/personas are OMITTED on purpose — they're the La Red tag, so bridging
-    // them into search would flood results with people-notes.
+    // personnel (staff) and personaje (fictional character) are a different sense.
+    // persona/personas AND the bare person/persons are OMITTED on purpose: 'persona'
+    // is the La Red tag, and the stemmer folds person/persons/persona → 'person', so
+    // including any of them would make a "personal" search flood with ~100 people-notes.
+    // (Searching the bare "person" still finds people via that same stem — as it should.)
     ['mechanism', 'mechanisms', 'mechanical', 'mechanics', 'mechanization', 'mechanized', 'mechanically', 'mechanize', 'mechanic', 'mechanizes', 'mecanismo', 'mecanismos', 'mecanico', 'mecanica', 'mecanizacion'],
-    ['personal', 'person', 'persons', 'personally', 'personales', 'personality', 'personalidad', 'personhood', 'personalized', 'personalizada', 'personalist'],
+    ['personal', 'personally', 'personales', 'personality', 'personalidad', 'personhood', 'personalized', 'personalizada', 'personalist'],
   ];
   const map = {};
-  for (const g of groups) for (const w of g) map[w] = g;
+  // Key on the NORMALIZED form: every lookup uses accent-stripped tokens, so raw
+  // accented keys (estudié, pensé, recordé, trabajé) would otherwise be dead. _norm is
+  // a hoisted function declaration, so it's already defined when this IIFE runs.
+  for (const g of groups) for (const w of g) map[_norm(w)] = g;
   return map;
 })();
 
