@@ -1862,7 +1862,7 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', ajeno: 'Ajeno (otras plumas)', hitos: 'Hitos', personas: 'Personas (La Red)', auditoria: 'Sala de auditoría' };
+const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · not mine', hitos: 'Hitos · milestones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría' };
 const HIDDEN_FOLDERS = new Set(['contexto']);          // expedientes render inline on persona folios, never as cards
 const TICKET_FOLDERS = new Set(['auditoria']);         // work tickets: own drawer, excluded from Todo + search
 const TYPE_STAMP = {
@@ -2644,6 +2644,17 @@ function renderView() {
       + rejuicio.map((n, i) => salaCardHtml(n, abiertas.length + i)).join('')
       + `</div>`;
     wireDesk(root);
+  } else if (!q && view.drawer === 'notas') {
+    // fragments are the biggest note type but have no folder — surface them as their own group
+    // (alongside conceptos / claims) without moving any files.
+    const TG = { concept: 'Conceptos · ideas', fragment: 'Fragmentos · capturas sueltas', claim: 'Claims · afirmaciones' };
+    const order = ['concept', 'fragment', 'claim'];
+    const types = order.filter(t => notes.some(n => n.fm.type === t))
+      .concat([...new Set(notes.map(n => n.fm.type))].filter(t => !order.includes(t)).sort());
+    root.innerHTML = `<div class="cards">` + types.map(t => {
+      const g = notes.filter(n => n.fm.type === t);
+      return `<div class="group-label">${escapeHtml(TG[t] || t)} (${g.length})</div>` + g.map(n => cardHtml(n, q)).join('');
+    }).join('') + `</div>`;
   } else {
     const desk = !q && view.drawer === 'bandeja';
     if (desk) {
