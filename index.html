@@ -466,6 +466,25 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .cc-n { font-family: 'Special Elite', monospace; font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .group-label:first-child { margin-top: 0; }
 
+/* la baraja — the class's recall deck: curation strip, focus chips, card review */
+.baraja { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 16px; padding: 9px 13px; background: var(--paper); border: 1px solid var(--line); border-left: 3px solid var(--gold); border-radius: 4px; }
+.bj-name { font-family: 'Special Elite', monospace; font-size: 10px; letter-spacing: 0.18em; color: var(--gold); white-space: nowrap; }
+.bj-meta { font-size: 11.5px; color: var(--ink-dim); flex: 1; min-width: 140px; }
+.bj-actions { display: flex; gap: 7px; }
+.bj-actions button { font-family: 'Special Elite', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; background: none; border: 1px solid var(--line); border-radius: 3px; color: var(--ink-dim); padding: 4px 11px; cursor: pointer; }
+.bj-actions button:hover:not(:disabled) { color: var(--ink); border-color: var(--gold); }
+.bj-actions button:disabled { opacity: 0.4; cursor: default; }
+#bj-save { color: var(--gold); border-color: var(--gold); }
+.bj-tog { font-family: 'Special Elite', monospace; font-size: 9.5px; background: none; border: 1px dashed var(--line); border-radius: 3px; color: var(--ink-faint); padding: 1px 7px; cursor: pointer; margin-left: 8px; }
+.bj-tog.on { color: var(--gold); border-color: var(--gold); border-style: solid; }
+#bj-review-list { margin: 0 0 16px; display: grid; gap: 8px; }
+.bj-card { background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 10px 13px; }
+.bj-q { font-size: 13.5px; color: var(--ink); line-height: 1.4; }
+.bj-a { font-size: 12px; color: var(--ink-dim); font-style: italic; margin-top: 5px; line-height: 1.45; }
+.bj-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 7px; font-family: 'Special Elite', monospace; font-size: 9.5px; color: var(--ink-faint); }
+.bj-kill { background: none; border: 1px solid var(--line); border-radius: 3px; color: var(--danger); padding: 1px 8px; cursor: pointer; }
+.bj-kill:hover { border-color: var(--danger); }
+
 /* la mesa de veto — Phase C review of the bandeja */
 .desk-bar {
   grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;
@@ -1427,6 +1446,164 @@ async function ghWrite(method, path, bodyObj) {
   return res;
 }
 function saveCorpusCache() { idbCorpusSet(corpus).catch(e => console.warn('corpus cache write', e)); }
+
+/* ── La Baraja (F2 slice 2): per-class recall-card curation. Archivo GENERATES + CURATES;
+   the hub (Leandro OS) only deals what this saves to cards/<course>.json in the corpus.
+   focus: [] or missing = the whole course deals; a subset = only those readings (his exam-scope
+   contract). killed: card ids removed in review — counted as "carded" so a regen can't resurrect. */
+const BJ_BATCH = 4;
+const BJ_PROMPT_HEAD = `You generate spaced-repetition recall cards from one student's own course notes.
+Leandro (Georgetown, Government & Public Policy) wrote these notes himself — the cards are for HIM, so never write "the note says" or "the reading": ask about the ideas, naming thinkers and cases directly.
+
+For each note below (delimited by ==== NOTE <slug> ====), return 0-3 cards. Rules:
+- Only card what the note ESTABLISHES — a claim, mechanism, distinction, critique, or example with a point. Open questions, unresolved threads, logistics -> 0 cards. Zero is a respectable answer; do not pad.
+- Each card stands alone: answerable with nothing but the question itself. Name the thinker/case in the question ("Lipset", "Turkey vs Poland"), never "this note" or "the author".
+- Prefer, in order: mechanism ("how does X produce Y"), distinction ("X vs Y"), critique ("what breaks in X's argument"), application ("what would X predict about Z"). Pure definition only when the definition is load-bearing.
+- Answers <= 40 words, declarative, the way he'd say it in seminar — not encyclopedia prose.
+- difficulty: "core" (must-know for the exam) or "stretch" (rewards deeper mastery).
+
+Return STRICT JSON only, no prose, no fences:
+{"cards":[{"slug":"<note slug>","q":"...","a":"...","kind":"mechanism|distinction|critique|application|definition","difficulty":"core|stretch"}]}
+
+NOTES:
+`;
+let bjDeck = null, bjCourse = null, bjFocus = null, bjDirty = false, bjBusy = false;   // bjFocus: Set of in-focus slugs; null = todas
+
+async function bjFetchDeck(course) {
+  const pat = state.settings.sync.githubPat; if (!pat) return null;
+  const res = await fetch(`https://api.github.com/repos/${state.corpus.repo}/contents/cards/${encodeURIComponent(course)}.json?ref=${state.corpus.branch}`,
+    { headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/vnd.github+json' }, cache: 'no-store' });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`baraja fetch ${res.status}`);
+  const j = await res.json();
+  const deck = JSON.parse(b64ToUtf8(j.content)); deck._sha = j.sha; return deck;
+}
+function bjClassNotes(course) { return corpus ? corpus.notes.filter(n => n.fm.course === course && n.slug !== course) : []; }
+function bjCardedSlugs(deck) {
+  const s = new Set();
+  (deck?.cards || []).forEach(c => s.add(c.slug));
+  (deck?.killed || []).forEach(id => s.add(String(id).split('#')[0]));
+  return s;
+}
+function bjNextIdx(deck, slug) {
+  let mx = 0;
+  const scan = id => { const m = /^(.*)#(\d+)$/.exec(String(id)); if (m && m[1] === slug) mx = Math.max(mx, +m[2]); };
+  (deck.cards || []).forEach(c => scan(c.id)); (deck.killed || []).forEach(scan);
+  return mx + 1;
+}
+function bjParseCards(txt) { const m = String(txt || '').match(/\{[\s\S]*\}/); if (!m) return null; try { return JSON.parse(m[0]).cards || null; } catch { return null; } }
+function bjNoteBlock(n) {
+  const tags = Array.isArray(n.fm.tags) ? n.fm.tags.join(', ') : String(n.fm.tags || '');
+  return `==== NOTE ${n.slug} ====\n(type: ${n.fm.type || ''} · title: ${n.fm.title || n.slug} · tags: ${tags})\n${String(n.body || '').trim()}\n`;
+}
+function bjMeta(msg) { const el = document.getElementById('bj-meta'); if (el) el.textContent = msg; }
+function bjStatusLine(total) {
+  const n = bjDeck?.cards?.length || 0;
+  const foco = bjFocus ? `foco ${bjFocus.size}/${total}` : 'foco: todas';
+  return n ? `${n} carta${n === 1 ? '' : 's'} · ${foco}${bjDirty ? ' · sin guardar' : ''}` : 'sin cartas aún — genera desde tus fichas';
+}
+async function bjSave(course, total) {
+  const short = bjDeck.short || (await askPrompt('Sigla corta para la clase', 'p. ej. C&D, CPS, LAGP — así la nombra la carta en la ciudad.')) || course.slice(0, 6);
+  bjDeck.short = short; bjDeck.course = course;
+  bjDeck.title = bjDeck.title || courseLabel(course);
+  bjDeck.focus = bjFocus ? [...bjFocus] : [];
+  bjDeck.generated = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const body = { ...bjDeck }; delete body._sha;
+  const res = await ghWrite('PUT', `cards/${course}.json`, {
+    message: `baraja: ${course} — ${bjDeck.cards.length} cartas · ${bjFocus ? 'foco ' + bjFocus.size + '/' + total : 'foco todas'}`,
+    content: utf8ToB64(JSON.stringify(body, null, 1)),
+    ...(bjDeck._sha ? { sha: bjDeck._sha } : {}),
+  });
+  const j = await res.json(); bjDeck._sha = j.content?.sha || bjDeck._sha;
+  bjDirty = false;
+  document.getElementById('bj-save')?.classList.add('hidden');
+  bjMeta(bjStatusLine(total)); toast(`baraja guardada — ${bjDeck.cards.length} cartas`);
+}
+async function bjGenerate(course, total) {
+  if (bjBusy) return;
+  if (!isClaudeEnabled()) { toast('activa Claude en settings (API key) para generar.', true); return; }
+  const carded = bjCardedSlugs(bjDeck);
+  const fresh = bjClassNotes(course).filter(n => !carded.has(n.slug));
+  if (!fresh.length) { toast('todas las fichas de la clase ya tienen cartas (o fueron descartadas).'); return; }
+  bjBusy = true; const genBtn = document.getElementById('bj-gen'); if (genBtn) genBtn.disabled = true;
+  bjDeck = bjDeck || { course, cards: [], killed: [] }; bjDeck.cards = bjDeck.cards || []; bjDeck.killed = bjDeck.killed || [];
+  bjDeck.model = state.settings.claude.model;
+  let made = 0;
+  try {
+    for (let i = 0; i < fresh.length; i += BJ_BATCH) {
+      const batch = fresh.slice(i, i + BJ_BATCH);
+      bjMeta(`generando ${Math.min(i + BJ_BATCH, fresh.length)}/${fresh.length} fichas…`);
+      let cards = null;
+      for (let t = 0; t < 2 && !cards; t++) {
+        try { cards = bjParseCards(await callClaude({ system: null, userMessage: BJ_PROMPT_HEAD + batch.map(bjNoteBlock).join('\n'), maxTokens: 8000 })); }
+        catch (e) { if (t) throw e; }
+      }
+      if (!cards) throw new Error('lote sin JSON válido');
+      cards.forEach(c => { if (c && c.slug && c.q && c.a) { c.id = `${c.slug}#${bjNextIdx(bjDeck, c.slug)}`; bjDeck.cards.push(c); made++; } });
+    }
+    bjDirty = true;
+    await bjSave(course, total);
+    bjMeta(bjStatusLine(total)); bjRenderReview(course, total);
+    toast(`☞ ${made} cartas nuevas de ${fresh.length} fichas`);
+  } catch (e) { toast(`la generación tropezó: ${e.message}`, true); bjMeta(bjStatusLine(total)); }
+  bjBusy = false; if (genBtn) genBtn.disabled = false;
+}
+function bjRenderReview(course, total) {
+  const box = document.getElementById('bj-review-list'); if (!box) return;
+  const cards = bjDeck?.cards || [];
+  if (!cards.length) { box.classList.add('hidden'); return; }
+  box.innerHTML = cards.map(c =>
+    `<div class="bj-card"><div class="bj-q">${escapeHtml(c.q)}</div><div class="bj-a">${escapeHtml(c.a)}</div>
+     <div class="bj-foot"><span>${escapeHtml(c.kind || '')} · ${escapeHtml(c.difficulty || '')} · ${escapeHtml(String(c.id).split('#')[0])}</span>
+     <button class="bj-kill" data-id="${escapeHtml(c.id)}" title="fuera de la baraja">✕</button></div></div>`).join('');
+  box.querySelectorAll('.bj-kill').forEach(b => b.addEventListener('click', () => {
+    const id = b.dataset.id;
+    bjDeck.killed = bjDeck.killed || []; bjDeck.killed.push(id);
+    bjDeck.cards = bjDeck.cards.filter(c => c.id !== id);
+    bjDirty = true; document.getElementById('bj-save')?.classList.remove('hidden');
+    bjMeta(bjStatusLine(total)); bjRenderReview(course, total);
+  }));
+}
+function bjMountClass(root, cnotes, course) {
+  const total = cnotes.filter(n => n.slug !== course).length;
+  const strip = document.createElement('div');
+  strip.className = 'baraja'; strip.id = 'bj-strip';
+  strip.innerHTML = `<span class="bj-name">☞ LA BARAJA</span><span class="bj-meta" id="bj-meta">leyendo la baraja…</span>
+    <span class="bj-actions"><button id="bj-gen">generar</button><button id="bj-review-btn" class="hidden">revisar</button><button id="bj-save" class="hidden">guardar</button></span>`;
+  const back = root.querySelector('#back-classes');
+  back?.after(strip);
+  const list = document.createElement('div'); list.id = 'bj-review-list'; list.className = 'hidden'; strip.after(list);
+  if (!state.settings.sync.githubPat) { bjMeta('token repo requerido (settings → sync) para leer/guardar la baraja'); document.getElementById('bj-gen').disabled = true; return; }
+  bjCourse = course; bjDeck = null; bjFocus = null; bjDirty = false;
+  document.getElementById('bj-gen').addEventListener('click', () => bjGenerate(course, total));
+  document.getElementById('bj-save').addEventListener('click', () => bjSave(course, total).catch(e => toast(`no se pudo guardar: ${e.message}`, true)));
+  document.getElementById('bj-review-btn').addEventListener('click', () => document.getElementById('bj-review-list').classList.toggle('hidden'));
+  bjFetchDeck(course).then(d => {
+    bjDeck = d;
+    bjFocus = (d && Array.isArray(d.focus) && d.focus.length) ? new Set(d.focus) : null;
+    bjMeta(bjStatusLine(total));
+    if (d?.cards?.length) { document.getElementById('bj-review-btn').classList.remove('hidden'); bjRenderReview(course, total); document.getElementById('bj-review-list').classList.add('hidden'); }
+    // per-ficha focus chips — class view only, injected so cardHtml stays universal
+    root.querySelectorAll('.card[data-open]').forEach(cardEl => {
+      const slug = cardEl.dataset.open; if (slug === course) return;
+      const chip = document.createElement('button');
+      chip.className = 'bj-tog'; chip.dataset.slug = slug;
+      const paint = () => { const on = !bjFocus || bjFocus.has(slug); chip.classList.toggle('on', on); chip.textContent = on ? '◈ en foco' : '◇ fuera'; };
+      paint();
+      chip.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const all = bjClassNotes(course).map(n => n.slug);
+        if (!bjFocus) bjFocus = new Set(all);
+        bjFocus.has(slug) ? bjFocus.delete(slug) : bjFocus.add(slug);
+        if (bjFocus.size === all.length) bjFocus = null;
+        bjDirty = true; document.getElementById('bj-save')?.classList.remove('hidden');
+        bjMeta(bjStatusLine(total));
+        root.querySelectorAll('.bj-tog').forEach(c2 => { const s2 = c2.dataset.slug, on2 = !bjFocus || bjFocus.has(s2); c2.classList.toggle('on', on2); c2.textContent = on2 ? '◈ en foco' : '◇ fuera'; });
+      });
+      cardEl.querySelector('.card-foot')?.appendChild(chip);
+    });
+  }).catch(e => bjMeta(`baraja ilegible: ${e.message}`));
+}
 
 function stripFmLines(content, keys) {
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -2663,6 +2840,7 @@ function renderView() {
         cnotes.filter(n => n.folder === f).map(n => cardHtml(n, '')).join('')).join('') + `</div>`;
     document.getElementById('back-classes').addEventListener('click', () => { view = { mode: 'classes', drawer: null, slug: null, q: '' }; renderAll(); });
     wireOpeners(root);
+    bjMountClass(root, cnotes, view.course);   // La Baraja: curation strip + per-ficha focus chips
     return;
   }
 
