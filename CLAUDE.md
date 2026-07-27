@@ -36,7 +36,12 @@ No Inter/Space Grotesk; don't reuse other apps' palettes.
 - Consulta desk (`?` or ✦ preguntar): multi-turn streamed chat over the corpus. Retrieval is
   **budget-driven, never a fixed hit count** — every hit above 15% of the top score goes in
   until `ASK_CHAR_BUDGET` is spent; follow-ups append only fichas the thread hasn't seen.
-  `ask.cites` keeps `[n]` numbering stable across the whole conversation
+  `ask.cites` keeps `[n]` numbering stable across the whole conversation.
+  **`max_tokens` covers thinking + answer** on opus-5/sonnet-5 (adaptive thinking is ON by
+  default) — that's why `ASK_MAX_TOKENS` is 8k, not 1.6k; a `stop_reason: max_tokens` renders
+  a "continuar" button instead of a severed sentence. One `cache_control` breakpoint rides the
+  newest user block so the next turn re-reads the ficha prefix at ~10% of input price;
+  `ASK_THREAD_BUDGET` caps cumulative ficha text so a long thread can't outgrow the window
 
 ## Ship rule (SW pinning)
 **Every index.html change ships with a `sw.js` CACHE_NAME bump.** The SW is cache-first for

@@ -292,6 +292,10 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .ask-cite:hover { color: var(--ink); background: var(--paper); border-left-color: var(--accent); }
 .ask-cite .n { color: var(--c-dusty-fg); }
 
+.ask-cut { margin-top: 11px; padding-top: 8px; border-top: 1px dashed var(--accent-soft); display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--danger); }
+.ask-continue { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.1em; color: var(--ink); border: 1px solid var(--accent-soft); border-radius: 2px; padding: 3px 9px; transition: background 0.14s, color 0.14s; }
+.ask-continue:hover { background: var(--accent); color: var(--bg); }
+
 .ask-empty { margin: auto 0; text-align: left; padding: 4px 2px 12px; }
 .ask-empty .mark { font-family: 'Libre Caslon Text', serif; font-style: italic; font-size: 26px; color: var(--ink); letter-spacing: -0.02em; }
 .ask-empty .line { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 8px; max-width: 34ch; }
@@ -1068,8 +1072,10 @@ async function callClaude({ system, userMessage, maxTokens = 350 }) {
   const data = await res.json();
   return data.content?.find(b => b.type === 'text')?.text || '(empty response)';   // sonnet-5+ can lead with a `thinking` block — [0] is not always the answer
 }
-// streaming twin of callClaude — same auth, SSE deltas handed to onDelta as they land
-async function streamClaude({ system, messages, maxTokens = 1600, onDelta }) {
+/* streaming twin of callClaude — same auth, SSE deltas handed to onDelta as they land.
+   Returns { text, stopReason, usage }: the desk needs stopReason to detect a
+   `max_tokens` cut and offer to continue instead of leaving a severed sentence. */
+async function streamClaude({ system, messages, maxTokens = 8000, onDelta }) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.claude.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
@@ -1083,24 +1089,31 @@ async function streamClaude({ system, messages, maxTokens = 1600, onDelta }) {
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', out = '';
+  let buf = '', out = '', stopReason = null, usage = null;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    buf += dec.decode(value, { stream: true });
+    buf += dec.decode(value, { stream: true });            // stream:true — a chunk can split a multi-byte char
     const lines = buf.split('\n');
     buf = lines.pop();                                     // keep the partial tail for the next chunk
     for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
+      if (!line.startsWith('data:')) continue;             // `event:` lines and heartbeat blanks carry nothing we need
       const payload = line.slice(5).trim();
       if (!payload || payload === '[DONE]') continue;
       let ev; try { ev = JSON.parse(payload); } catch { continue; }
       if (ev.type === 'error') throw new Error(ev.error?.message || 'stream error');
-      // text_delta only — an opus/sonnet turn can also emit thinking_delta blocks
+      // text_delta only — an opus/sonnet turn also emits thinking blocks (empty by default)
       if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') { out += ev.delta.text; onDelta?.(out); }
+      // usage arrives in two halves — input/cache counts on message_start, output on
+      // message_delta — so merge, never replace (replacing loses the cache-hit numbers)
+      if (ev.type === 'message_start' && ev.message?.usage) usage = { ...(usage || {}), ...ev.message.usage };
+      if (ev.type === 'message_delta') {
+        if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+        if (ev.usage) usage = { ...(usage || {}), ...ev.usage };
+      }
     }
   }
-  return out;
+  return { text: out, stopReason, usage };
 }
 
 /* ── ask-the-archive: the consulta desk ─────────────────────────────────────
@@ -1112,10 +1125,16 @@ async function streamClaude({ system, messages, maxTokens = 1600, onDelta }) {
    follow-up retrieves again and appends only fichas the thread hasn't seen,
    so context accumulates instead of resetting.
    The app still never WRITES note content; this only reads the cache. */
-const ASK_CHAR_BUDGET = 140000;    // ~35k tokens of ficha text per retrieval turn
+const ASK_CHAR_BUDGET  = 140000;   // ~35k tokens of ficha text per retrieval turn
+const ASK_THREAD_BUDGET = 520000;  // ~130k tokens of ficha text across the WHOLE thread —
+                                   // every turn re-sends the full transcript, so without a
+                                   // ceiling a 4-turn conversation walks into the context window
 const ASK_PER_FICHA   = 7000;      // p90 ficha is ~11k chars → most arrive whole
 const ASK_MAX_FICHAS  = 60;        // ceiling, not a target
 const ASK_SCORE_FLOOR = 0.15;      // drop hits under 15% of the top hit — junk, not depth
+const ASK_MAX_TOKENS  = 8000;      // thinking + answer share this budget on opus-5/sonnet-5:
+                                   // adaptive thinking is ON by default, so a tight cap
+                                   // truncated the ANSWER mid-sentence (the Jul 27 bug)
 const ASK_SYSTEM =
   "You are El Archivero, the archivist of Leandro's private knowledge corpus (El Archivo). " +
   "Answer USING ONLY the numbered fichas given as context across the conversation.\n" +
@@ -1127,11 +1146,12 @@ const ASK_SYSTEM =
   "This is a conversation: answer the question asked, don't re-summarize what you already said.";
 
 const ask = {
-  turns: [],          // [{ role, text }] — the API transcript
+  turns: [],          // [{ role, content }] — the API transcript, plain strings
   cites: [],          // notes, in citation order; index+1 is the [n] the model sees
   seen: new Set(),    // slugs already shipped as context
+  chars: 0,           // ficha text shipped so far this thread (vs ASK_THREAD_BUDGET)
   busy: false,
-  lastStats: null,    // { read, total } from the most recent retrieval
+  lastStats: null,    // { read, considered } from the most recent retrieval
 };
 const askThread = document.getElementById('ask-thread');
 const askInput = document.getElementById('ask-input');
@@ -1141,7 +1161,9 @@ const askSendBtn = document.getElementById('ask-send');
    the char budget runs out. Returns the notes plus how many the budget cut. */
 function askGather(q) {
   const scored = searchNotesScored(q);
-  if (!scored.length) return { hits: [], considered: 0 };
+  if (!scored.length) return { hits: [], considered: 0, chars: 0 };
+  // the thread's remaining headroom caps this turn — a late follow-up gets what's left, not a full 140k
+  const budget = Math.min(ASK_CHAR_BUDGET, Math.max(0, ASK_THREAD_BUDGET - ask.chars));
   const floor = scored[0].score * ASK_SCORE_FLOOR;
   const hits = [];
   let chars = 0, considered = 0;
@@ -1150,10 +1172,10 @@ function askGather(q) {
     considered++;
     if (ask.seen.has(n.slug) || hits.length >= ASK_MAX_FICHAS) continue;
     const take = Math.min(String(n.body || '').trim().length, ASK_PER_FICHA);
-    if (chars + take > ASK_CHAR_BUDGET && hits.length) continue;   // skip the fat one, keep filling
+    if (chars + take > budget) continue;                           // skip the fat one, keep filling
     hits.push(n); chars += take;
   }
-  return { hits, considered };
+  return { hits, considered, chars };
 }
 
 function askContextBlock(hits) {
@@ -1242,7 +1264,7 @@ function askStarters() {
 }
 
 function askReset() {
-  ask.turns = []; ask.cites = []; ask.seen = new Set(); ask.lastStats = null;
+  ask.turns = []; ask.cites = []; ask.seen = new Set(); ask.chars = 0; ask.lastStats = null;
   askRenderEmpty();
   askInput.value = ''; askInput.style.height = 'auto';
 }
@@ -1265,19 +1287,46 @@ async function askSubmit() {
   if (!ask.turns.length) askThread.innerHTML = '';
   askPushUser(q);
 
-  const { hits, considered } = askGather(q);
+  const { hits, considered, chars } = askGather(q);
   if (!ask.turns.length && !hits.length) {
     const el = askPushClaude();
     el.classList.add('error');
     el.querySelector('.ask-prose').textContent = 'No hay fichas en la bodega que toquen eso. El archivo solo responde desde lo que guarda.';
     return;
   }
+  // thread full: it can still answer from what's already loaded, but say so —
+  // silently dropping fresh fichas would look like the archive forgot them
+  if (considered && !hits.length && ask.chars >= ASK_THREAD_BUDGET) {
+    toast('hilo lleno: responde con lo ya cargado. ✎ para una conversación nueva.');
+  }
 
-  const citeMark = ask.cites.length;                                 // rollback point if the turn dies
+  const citeMark = ask.cites.length;                                 // BEFORE askContextBlock — it pushes cites
   const block = askContextBlock(hits);
-  ask.turns.push({ role: 'user', content: block ? `Fichas nuevas del archivo (contexto):\n\n${block}\n\n———\n\nPregunta: ${q}` : q });
+  ask.chars += chars;
   ask.lastStats = { read: ask.seen.size, considered };
-  askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto · ${considered} relevantes`);
+  await askRun(
+    block ? `Fichas nuevas del archivo (contexto):\n\n${block}\n\n———\n\nPregunta: ${q}` : q,
+    { hits, considered, citeMark, chars },
+  );
+}
+
+/* Prompt caching: the ficha context is the expensive, stable part of the prefix
+   (~35k tokens), and every turn re-sends the whole transcript. A breakpoint on
+   the newest user block makes the next turn re-read that prefix at ~10% of the
+   input price instead of paying full freight for the same fichas again. */
+function askApiMessages() {
+  const last = ask.turns.length - 1;
+  return ask.turns.map((t, i) => (i === last && t.role === 'user')
+    ? { role: t.role, content: [{ type: 'text', text: t.content, cache_control: { type: 'ephemeral' } }] }
+    : { role: t.role, content: t.content });
+}
+
+/* one model turn: push the user content, stream the answer into a fresh bubble,
+   roll the whole thing back if it dies. `hits` is only for the citation list —
+   a continuation turn passes none. */
+async function askRun(userContent, { hits = [], considered = null, citeMark = ask.cites.length, chars = 0 } = {}) {
+  ask.turns.push({ role: 'user', content: userContent });
+  askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto${considered === null ? '' : ` · ${considered} relevantes`}`);
 
   const el = askPushClaude();
   const prose = el.querySelector('.ask-prose');
@@ -1301,12 +1350,19 @@ async function askSubmit() {
   };
 
   try {
-    const answer = await streamClaude({ system: ASK_SYSTEM, messages: ask.turns, maxTokens: 1600, onDelta: paint });
+    const { text: answer, stopReason } = await streamClaude({
+      system: ASK_SYSTEM, messages: askApiMessages(), maxTokens: ASK_MAX_TOKENS, onDelta: paint,
+    });
     settled = true;
     ask.turns.push({ role: 'assistant', content: answer });
     prose.innerHTML = askLinkRefs(mdRender(answer));
     if (hits.length) prose.insertAdjacentHTML('beforeend', askCitesBlock(hits));
+    if (stopReason === 'max_tokens') prose.insertAdjacentHTML('beforeend', askContinueBlock());
     askWireCites(prose);
+    prose.querySelector('.ask-continue')?.addEventListener('click', ev => {
+      ev.target.closest('.ask-cut')?.remove();
+      askRun('Se cortó por límite de tokens. Continúa exactamente donde te quedaste, sin repetir lo ya dicho.');
+    });
     askScroll();
   } catch (e) {
     console.error('ask', e);
@@ -1314,12 +1370,17 @@ async function askSubmit() {
     ask.turns.pop();                                                 // failed turn must not poison the thread
     ask.cites.length = citeMark;                                     // …and its fichas must stay un-sent,
     hits.forEach(n => ask.seen.delete(n.slug));                      // or a retry would omit them as "seen"
+    ask.chars = Math.max(0, ask.chars - chars);                      // …and must not eat the thread budget
     askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto`);
     el.classList.add('error');
     prose.textContent = 'Claude no respondió: ' + e.message;
   } finally {
     ask.busy = false; askSendBtn.disabled = false; askInput.focus();
   }
+}
+
+function askContinueBlock() {
+  return `<div class="ask-cut"><span>cortado por límite de tokens</span><button class="ask-continue" type="button">continuar ⤵</button></div>`;
 }
 
 document.getElementById('ask-btn').addEventListener('click', askOpen);
