@@ -1010,7 +1010,7 @@ async function callClaude({ system, userMessage, maxTokens = 350 }) {
     throw new Error(msg);
   }
   const data = await res.json();
-  return data.content?.[0]?.text || '(empty response)';
+  return data.content?.find(b => b.type === 'text')?.text || '(empty response)';   // sonnet-5+ can lead with a `thinking` block — [0] is not always the answer
 }
 function showClaudePanel({ title, status, text }) {
   const panel = document.getElementById('claude-panel');
