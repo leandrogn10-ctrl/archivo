@@ -457,6 +457,13 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .card .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 6px; font-size: 10px; color: var(--ink-faint); letter-spacing: 0.05em; }
 .card .lock { color: var(--gold); }
 .group-label { grid-column: 1 / -1; font-family: 'Special Elite', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em; color: var(--ink-faint); border-bottom: 1px dashed var(--line); padding-bottom: 4px; margin-top: 10px; }
+/* the class lens — semesters → classes, then a class's footprint across drawers */
+.class-index { animation: fadeUp 0.35s cubic-bezier(0.2,0.8,0.2,1); }
+.class-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 20px; }
+.class-chip { display: inline-flex; align-items: baseline; gap: 9px; background: var(--paper-hi); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px; padding: 8px 13px; cursor: pointer; transition: border-color 0.15s, transform 0.1s; text-align: left; }
+.class-chip:hover { border-color: var(--accent-soft); transform: translateY(-1px); }
+.cc-name { font-size: 14px; color: var(--ink); }
+.cc-n { font-family: 'Special Elite', monospace; font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .group-label:first-child { margin-top: 0; }
 
 /* la mesa de veto — Phase C review of the bandeja */
@@ -1862,7 +1869,7 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja (inbox)', cursos: 'Cursos', notas: 'Notas', fuentes: 'Fuentes', casos: 'Casos', oficios: 'Oficios', ensayos: 'Ensayos', proyectos: 'Proyectos', creativo: 'Creativo', ajeno: 'Ajeno (otras plumas)', hitos: 'Hitos', personas: 'Personas (La Red)', auditoria: 'Sala de auditoría' };
+const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · not mine', hitos: 'Hitos · milestones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría' };
 const HIDDEN_FOLDERS = new Set(['contexto']);          // expedientes render inline on persona folios, never as cards
 const TICKET_FOLDERS = new Set(['auditoria']);         // work tickets: own drawer, excluded from Todo + search
 const TYPE_STAMP = {
@@ -1883,19 +1890,25 @@ function notesFor(drawer) {
   return corpus.notes.filter(n => n.folder === drawer);
 }
 
+function courseLabel(slug) { return String(slug || '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
+
 function renderDrawers() {
   const ul = document.getElementById('drawer-list');
   if (!ul) return;
   const total = corpus ? corpus.notes.length : 0;
   const folders = corpus ? [...new Set(corpus.notes.map(n => n.folder))].filter(f => f && !HIDDEN_FOLDERS.has(f)).sort() : [];
   let html = `<li data-drawer="todo" class="${view.mode === 'list' && view.drawer === 'todo' ? 'active' : ''}"><span>Todo el archivo</span><span class="count">${total}</span></li>`;
+  const nCourses = corpus ? new Set(corpus.notes.filter(n => n.fm.course).map(n => n.fm.course)).size : 0;   // the cross-drawer class lens
+  html += `<li data-nav="classes" class="${view.mode === 'classes' || view.mode === 'class' ? 'active' : ''}"><span>Clases · by class</span><span class="count">${nCourses}</span></li>`;
   folders.forEach(f => {
     const c = corpus.notes.filter(n => n.folder === f).length;
     html += `<li data-drawer="${escapeHtml(f)}" class="${view.mode === 'list' && view.drawer === f ? 'active' : ''}"><span>${escapeHtml(FOLDER_LABELS[f] || f)}</span><span class="count">${c}</span></li>`;
   });
   ul.innerHTML = html;
   ul.querySelectorAll('li').forEach(li => li.addEventListener('click', () => {
-    view = { mode: 'list', drawer: li.dataset.drawer, slug: null, q: '' };
+    view = li.dataset.nav === 'classes'
+      ? { mode: 'classes', drawer: null, slug: null, q: '' }
+      : { mode: 'list', drawer: li.dataset.drawer, slug: null, q: '' };
     document.getElementById('search-input').value = '';
     renderAll();
     const sb = document.querySelector('.sidebar');
@@ -2613,6 +2626,46 @@ function renderView() {
     return;
   }
 
+  if (view.mode === 'classes') {   // the class index: semesters → classes, drawn from every drawer's course: field
+    const withCourse = corpus.notes.filter(n => n.fm.course);
+    header.textContent = 'Clases';
+    const nC = new Set(withCourse.map(n => n.fm.course)).size;
+    meta.textContent = `${withCourse.length} ficha${withCourse.length === 1 ? '' : 's'} · ${nC} clase${nC === 1 ? '' : 's'}`;
+    if (!withCourse.length) {
+      root.innerHTML = `<div class="empty-state"><div class="ornament">❧</div><h3>aún sin clases</h3><p>Ninguna ficha lleva <code>course:</code> todavía — el barrido por clase las etiqueta.</p></div>`;
+      return;
+    }
+    const SEM_ORDER = ['Fall 2026', 'Spring 2026', 'Fall 2025', 'Summer 2025', 'Spring 2025', 'Fall 2024', 'Pre-college'];
+    const bySem = {};
+    withCourse.forEach(n => { const s = n.fm.semester || '—'; if (!bySem[s]) bySem[s] = {}; bySem[s][n.fm.course] = (bySem[s][n.fm.course] || 0) + 1; });
+    const sems = Object.keys(bySem).sort((a, b) => { const ia = SEM_ORDER.indexOf(a), ib = SEM_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
+    root.innerHTML = `<div class="class-index">` + sems.map(s => {
+      const courses = bySem[s];
+      const chips = Object.keys(courses).sort().map(c =>
+        `<button class="class-chip" data-course="${escapeHtml(c)}"><span class="cc-name">${escapeHtml(courseLabel(c))}</span><span class="cc-n">${courses[c]}</span></button>`).join('');
+      return `<div class="group-label">${escapeHtml(s)}</div><div class="class-chips">${chips}</div>`;
+    }).join('') + `</div>`;
+    root.querySelectorAll('[data-course]').forEach(el => el.addEventListener('click', () => {
+      view = { mode: 'class', course: el.dataset.course, drawer: null, slug: null, q: '' }; renderAll();
+    }));
+    return;
+  }
+  if (view.mode === 'class') {   // one class, its whole footprint pulled from every drawer, grouped by kind
+    const cnotes = corpus.notes.filter(n => n.fm.course === view.course);
+    header.textContent = courseLabel(view.course);
+    const semNote = cnotes.find(n => n.fm.semester);
+    const nDrawers = new Set(cnotes.map(n => n.folder)).size;
+    meta.textContent = `${cnotes.length} ficha${cnotes.length === 1 ? '' : 's'}${semNote ? ' · ' + semNote.fm.semester : ''} · ${nDrawers} cajón${nDrawers === 1 ? '' : 'es'}`;
+    const folders = [...new Set(cnotes.map(n => n.folder))].sort((a, b) => a === 'cursos' ? -1 : b === 'cursos' ? 1 : a.localeCompare(b));   // spine + lecture notes first
+    root.innerHTML = `<a class="back-btn" id="back-classes">← todas las clases</a>` +
+      `<div class="cards">` + folders.map(f =>
+        `<div class="group-label">${escapeHtml(FOLDER_LABELS[f] || f)} (${cnotes.filter(n => n.folder === f).length})</div>` +
+        cnotes.filter(n => n.folder === f).map(n => cardHtml(n, '')).join('')).join('') + `</div>`;
+    document.getElementById('back-classes').addEventListener('click', () => { view = { mode: 'classes', drawer: null, slug: null, q: '' }; renderAll(); });
+    wireOpeners(root);
+    return;
+  }
+
   // list mode
   const q = view.q;
   let notes, label;
@@ -2644,6 +2697,17 @@ function renderView() {
       + rejuicio.map((n, i) => salaCardHtml(n, abiertas.length + i)).join('')
       + `</div>`;
     wireDesk(root);
+  } else if (!q && view.drawer === 'notas') {
+    // fragments are the biggest note type but have no folder — surface them as their own group
+    // (alongside conceptos / claims) without moving any files.
+    const TG = { concept: 'Conceptos · ideas', fragment: 'Fragmentos · capturas sueltas', claim: 'Claims · afirmaciones' };
+    const order = ['concept', 'fragment', 'claim'];
+    const types = order.filter(t => notes.some(n => n.fm.type === t))
+      .concat([...new Set(notes.map(n => n.fm.type))].filter(t => !order.includes(t)).sort());
+    root.innerHTML = `<div class="cards">` + types.map(t => {
+      const g = notes.filter(n => n.fm.type === t);
+      return `<div class="group-label">${escapeHtml(TG[t] || t)} (${g.length})</div>` + g.map(n => cardHtml(n, q)).join('');
+    }).join('') + `</div>`;
   } else {
     const desk = !q && view.drawer === 'bandeja';
     if (desk) {
