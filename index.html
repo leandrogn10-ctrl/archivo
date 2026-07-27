@@ -234,27 +234,78 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .sync-status.ok { color: var(--c-sage-fg); }
 .sync-status.err { color: var(--danger); }
 
-.claude-panel { position: fixed; bottom: 24px; right: 24px; width: 380px; max-height: 60vh; background: var(--bg-elev); border: 1px solid var(--c-dusty-bd); border-radius: 3px; box-shadow: var(--shadow); display: flex; flex-direction: column; z-index: 900; animation: claudeIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
-.claude-panel.hidden { display: none; }
-@keyframes claudeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
-.claude-panel header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-.claude-panel .badge { color: var(--c-dusty-fg); font-size: 10px; text-transform: uppercase; letter-spacing: 0.18em; font-weight: 600; }
-.claude-panel .panel-title { flex: 1; font-family: 'Libre Caslon Text', serif; font-style: italic; color: var(--ink); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.claude-panel .panel-close { color: var(--ink-faint); font-size: 18px; line-height: 1; padding: 0 4px; }
-.claude-panel .panel-close:hover { color: var(--accent); }
-.claude-panel .panel-body { padding: 14px 16px; font-size: 13px; line-height: 1.6; color: var(--ink); overflow-y: auto; white-space: pre-wrap; }
-.claude-panel .panel-body.thinking { color: var(--ink-faint); font-style: italic; display: flex; align-items: center; gap: 8px; }
-.claude-panel .panel-body.thinking::before { content: '✦'; color: var(--c-dusty-fg); animation: pulse 1.2s infinite; font-style: normal; }
-.claude-panel.error .panel-body { color: var(--danger); font-size: 12px; }
-.claude-panel .panel-foot { padding: 8px 16px 12px; font-size: 10px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line-soft); }
-/* ── ask-the-archive (RAG Q&A) ── */
+/* ── ask-the-archive: the consulta desk (a real conversation, not a one-shot panel) ── */
 .ask-btn { color: var(--c-dusty-fg); }
 .ask-btn:hover { color: var(--accent); background: var(--paper); }
-.claude-panel .panel-body .ask-answer { white-space: pre-wrap; }
-.claude-panel .panel-body .ask-cites { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; }
-.ask-cites-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-faint); margin-bottom: 2px; }
-.ask-cite { text-align: left; font-family: inherit; font-size: 11.5px; line-height: 1.4; color: var(--ink-dim); padding: 3px 6px; border-radius: 2px; border-left: 2px solid var(--c-dusty-bd); cursor: pointer; transition: color 0.12s, background 0.12s, border-color 0.12s; }
+
+.ask-chat {
+  position: fixed; bottom: 24px; right: 24px; width: 460px; height: min(76vh, 720px);
+  background: var(--bg-elev);
+  background-image: radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--gold) 8%, transparent) 0%, transparent 60%);
+  border: 1px solid var(--c-dusty-bd); border-radius: 4px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; z-index: 900; overflow: hidden;
+  animation: askIn 0.42s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.ask-chat.hidden { display: none; }
+@keyframes askIn { from { opacity: 0; transform: translateY(18px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+.ask-chat > header { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 55%, transparent); }
+.ask-chat .badge { color: var(--c-dusty-fg); font-size: 10px; text-transform: uppercase; letter-spacing: 0.18em; font-weight: 600; }
+.ask-chat .ask-sub { flex: 1; font-size: 10px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ask-chat .ask-hbtn { color: var(--ink-faint); font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 2px; transition: color 0.12s, background 0.12s; }
+.ask-chat .ask-hbtn:hover { color: var(--accent); background: var(--paper); }
+
+.ask-thread { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 16px 14px 6px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+.ask-thread::-webkit-scrollbar { width: 8px; }
+.ask-thread::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.ask-msg { animation: askMsgIn 0.32s cubic-bezier(0.2, 0.8, 0.25, 1) both; }
+@keyframes askMsgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.ask-msg.user { align-self: flex-end; max-width: 86%; background: var(--paper-hi); border: 1px solid var(--line); border-right: 2px solid var(--accent); border-radius: 4px 4px 1px 4px; padding: 8px 11px; font-size: 12.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.ask-msg.claude { max-width: 100%; }
+.ask-msg.claude .ask-who { display: flex; align-items: center; gap: 6px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--c-dusty-fg); margin-bottom: 6px; }
+.ask-msg.claude .ask-prose { font-family: 'Libre Caslon Text', 'Times New Roman', serif; font-size: 14.5px; line-height: 1.65; color: var(--ink); }
+.ask-msg.claude .ask-prose > * + * { margin-top: 9px; }
+.ask-msg.claude .ask-prose p { margin: 0; }
+.ask-msg.claude .ask-prose ul, .ask-msg.claude .ask-prose ol { padding-left: 18px; }
+.ask-msg.claude .ask-prose li + li { margin-top: 4px; }
+.ask-msg.claude .ask-prose h1, .ask-msg.claude .ask-prose h2, .ask-msg.claude .ask-prose h3 { font-size: 15px; font-style: italic; color: var(--ink-dim); }
+.ask-msg.claude .ask-prose code { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--paper); padding: 1px 4px; border-radius: 2px; }
+.ask-msg.claude .ask-prose blockquote { border-left: 2px solid var(--c-dusty-bd); padding-left: 10px; color: var(--ink-dim); font-style: italic; }
+.ask-msg.error .ask-prose { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--danger); }
+.ask-cursor { display: inline-block; width: 7px; height: 14px; background: var(--c-dusty-fg); vertical-align: -2px; margin-left: 2px; animation: pulse 1s steps(2) infinite; }
+
+.ask-ref { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--c-dusty-fg); border-bottom: none; cursor: pointer; padding: 0 1px; vertical-align: 1px; }
+.ask-ref:hover { color: var(--accent); }
+
+.ask-thinking { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-faint); font-style: italic; }
+.ask-thinking::before { content: '✦'; color: var(--c-dusty-fg); animation: pulse 1.2s infinite; font-style: normal; }
+
+.ask-cites { margin-top: 11px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.ask-cites summary { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-faint); cursor: pointer; list-style: none; }
+.ask-cites summary::-webkit-details-marker { display: none; }
+.ask-cites summary::before { content: '▸ '; color: var(--c-dusty-fg); }
+.ask-cites[open] summary::before { content: '▾ '; }
+.ask-cites summary:hover { color: var(--ink-dim); }
+.ask-cites .ask-cite-list { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+.ask-cite { text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.4; color: var(--ink-dim); padding: 3px 7px; border-radius: 2px; border-left: 2px solid var(--c-dusty-bd); cursor: pointer; transition: color 0.12s, background 0.12s, border-color 0.12s; }
 .ask-cite:hover { color: var(--ink); background: var(--paper); border-left-color: var(--accent); }
+.ask-cite .n { color: var(--c-dusty-fg); }
+
+.ask-empty { margin: auto 0; text-align: left; padding: 4px 2px 12px; }
+.ask-empty .mark { font-family: 'Libre Caslon Text', serif; font-style: italic; font-size: 26px; color: var(--ink); letter-spacing: -0.02em; }
+.ask-empty .line { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 8px; max-width: 34ch; }
+.ask-starters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+.ask-starter { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-dim); border: 1px solid var(--line); border-radius: 2px; padding: 5px 9px; transition: color 0.14s, border-color 0.14s, background 0.14s, transform 0.14s; }
+.ask-starter:hover { color: var(--ink); border-color: var(--c-dusty-bd); background: var(--paper); transform: translateY(-1px); }
+
+.ask-composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 45%, transparent); }
+.ask-composer textarea { flex: 1; resize: none; max-height: 132px; min-height: 34px; padding: 8px 10px; font-size: 12.5px; line-height: 1.5; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 3px; transition: border-color 0.14s; }
+.ask-composer textarea::placeholder { color: var(--ink-faint); }
+.ask-composer textarea:focus { border-color: var(--c-dusty-bd); }
+.ask-send { width: 34px; height: 34px; flex: none; display: grid; place-items: center; font-size: 15px; color: var(--bg); background: var(--accent); border-radius: 3px; transition: opacity 0.14s, transform 0.14s; }
+.ask-send:hover { transform: translateY(-1px); }
+.ask-send:disabled { opacity: 0.35; cursor: default; transform: none; }
 
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--paper-hi); border: 1px solid var(--accent-soft); color: var(--ink); padding: 10px 18px; font-size: 12px; border-radius: 2px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 1000; max-width: 80vw; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
@@ -383,10 +434,11 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
   .modal footer { padding: 12px 20px 20px; }
   .prompt-modal { width: 92%; max-width: 460px; margin: auto; border-radius: 12px; padding: 22px; animation: modalIn 0.2s; }
 
-  .claude-panel {
-    width: calc(100vw - 24px);
-    right: 12px; left: 12px;
-    bottom: calc(86px + env(safe-area-inset-bottom));
+  .ask-chat {
+    width: auto; right: 8px; left: 8px;
+    top: calc(12px + env(safe-area-inset-top));
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    height: auto;
   }
   .toast { bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
@@ -398,7 +450,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
     body { background: var(--bg); }
     .topbar { padding-top: max(28px, calc(env(safe-area-inset-top) + 16px)); }
     .content { padding-bottom: max(60px, calc(env(safe-area-inset-bottom) + 32px)); }
-    .claude-panel { bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px)); }
+    .ask-chat { bottom: max(78px, calc(env(safe-area-inset-bottom) + 70px)); }
     .toast { bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px)); }
   }
 }
@@ -700,14 +752,18 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
   </div>
 </dialog>
 
-<aside class="claude-panel hidden" id="claude-panel">
+<aside class="ask-chat hidden" id="ask-chat" aria-label="Preguntarle al archivo">
   <header>
-    <span class="badge">✦ claude</span>
-    <span class="panel-title" id="claude-panel-title"></span>
-    <button class="panel-close" id="claude-panel-close">×</button>
+    <span class="badge">✦ el archivero</span>
+    <span class="ask-sub" id="ask-sub"></span>
+    <button class="ask-hbtn" id="ask-new" title="conversación nueva">✎</button>
+    <button class="ask-hbtn" id="ask-close" title="cerrar (esc)">×</button>
   </header>
-  <div class="panel-body" id="claude-panel-body"></div>
-  <div class="panel-foot" id="claude-panel-foot"></div>
+  <div class="ask-thread" id="ask-thread"></div>
+  <form class="ask-composer" id="ask-composer">
+    <textarea id="ask-input" rows="1" placeholder="pregúntale al archivo…" autocomplete="off"></textarea>
+    <button type="submit" class="ask-send" id="ask-send" title="enviar (↵)">↑</button>
+  </form>
 </aside>
 
 <input type="file" id="import-file" accept=".json,application/json" hidden>
@@ -1012,87 +1068,272 @@ async function callClaude({ system, userMessage, maxTokens = 350 }) {
   const data = await res.json();
   return data.content?.find(b => b.type === 'text')?.text || '(empty response)';   // sonnet-5+ can lead with a `thinking` block — [0] is not always the answer
 }
-function showClaudePanel({ title, status, text }) {
-  const panel = document.getElementById('claude-panel');
-  panel.classList.remove('hidden', 'error');
-  if (status === 'error') panel.classList.add('error');
-  document.getElementById('claude-panel-title').textContent = title;
-  const body = document.getElementById('claude-panel-body');
-  body.className = 'panel-body' + (status === 'thinking' ? ' thinking' : '');
-  body.textContent = text;
-  document.getElementById('claude-panel-foot').innerHTML =
-    `<span>${state.settings.claude.model.split('-')[1]}</span><span>${status === 'thinking' ? '•' : new Date().toLocaleTimeString()}</span>`;
+// streaming twin of callClaude — same auth, SSE deltas handed to onDelta as they land
+async function streamClaude({ system, messages, maxTokens = 1600, onDelta }) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.claude.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify({ model: state.settings.claude.model, max_tokens: maxTokens, stream: true, system, messages }),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    let msg = `${res.status}`;
+    try { const j = JSON.parse(txt); msg = j.error?.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', out = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();                                     // keep the partial tail for the next chunk
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let ev; try { ev = JSON.parse(payload); } catch { continue; }
+      if (ev.type === 'error') throw new Error(ev.error?.message || 'stream error');
+      // text_delta only — an opus/sonnet turn can also emit thinking_delta blocks
+      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') { out += ev.delta.text; onDelta?.(out); }
+    }
+  }
+  return out;
 }
-document.getElementById('claude-panel-close').addEventListener('click', () => { document.getElementById('claude-panel').classList.add('hidden'); });
 
-/* ── ask-the-archive: RAG Q&A over the corpus ───────────────────────────────
-   retrieval reuses searchNotes (the reading room's own ranker) → a numbered
-   context block of the top fichas → Claude answers ONLY from them → the panel
-   shows the answer plus clickable citations back to each consulted ficha.
+/* ── ask-the-archive: the consulta desk ─────────────────────────────────────
+   A real conversation, not a one-shot: multi-turn thread, streamed answers,
+   inline [n] citations that jump to the ficha. Retrieval reuses searchNotes'
+   ranker, but the depth is BUDGET-driven, never a fixed count — every ficha
+   the ranker considers relevant goes in until the char budget is spent, so a
+   broad question reads dozens of fichas and a narrow one reads three. Each
+   follow-up retrieves again and appends only fichas the thread hasn't seen,
+   so context accumulates instead of resetting.
    The app still never WRITES note content; this only reads the cache. */
-const ASK_MAX_FICHAS = 6;          // retrieval depth fed to Claude
-const ASK_BODY_CHARS = 1100;       // per-ficha body budget in the context block
+const ASK_CHAR_BUDGET = 140000;    // ~35k tokens of ficha text per retrieval turn
+const ASK_PER_FICHA   = 7000;      // p90 ficha is ~11k chars → most arrive whole
+const ASK_MAX_FICHAS  = 60;        // ceiling, not a target
+const ASK_SCORE_FLOOR = 0.15;      // drop hits under 15% of the top hit — junk, not depth
 const ASK_SYSTEM =
   "You are El Archivero, the archivist of Leandro's private knowledge corpus (El Archivo). " +
-  "Answer the question USING ONLY the numbered fichas given as context.\n" +
+  "Answer USING ONLY the numbered fichas given as context across the conversation.\n" +
   "- Ground every claim in the fichas and cite them inline by number, e.g. [1], [3].\n" +
   "- If the fichas do not cover the question, say so plainly. Never invent facts or citations.\n" +
   "- A ficha tagged provenance:external/ai/hybrid is NOT Leandro's own thinking — attribute it " +
   "as an outside or AI piece kept in the archive, never as his own view.\n" +
-  "- Reply in the same language as the question (Spanish or English). Be dry, literate and concise " +
-  "— a few short paragraphs at most.";
+  "- Reply in the same language as the question (Spanish or English). Be dry, literate and concise. " +
+  "This is a conversation: answer the question asked, don't re-summarize what you already said.";
 
-function buildAskContext(hits) {
-  return hits.map((n, i) => {
+const ask = {
+  turns: [],          // [{ role, text }] — the API transcript
+  cites: [],          // notes, in citation order; index+1 is the [n] the model sees
+  seen: new Set(),    // slugs already shipped as context
+  busy: false,
+  lastStats: null,    // { read, total } from the most recent retrieval
+};
+const askThread = document.getElementById('ask-thread');
+const askInput = document.getElementById('ask-input');
+const askSendBtn = document.getElementById('ask-send');
+
+/* budget-driven gather: rank order, every hit above the relevance floor, until
+   the char budget runs out. Returns the notes plus how many the budget cut. */
+function askGather(q) {
+  const scored = searchNotesScored(q);
+  if (!scored.length) return { hits: [], considered: 0 };
+  const floor = scored[0].score * ASK_SCORE_FLOOR;
+  const hits = [];
+  let chars = 0, considered = 0;
+  for (const { n, score } of scored) {
+    if (score < floor) break;
+    considered++;
+    if (ask.seen.has(n.slug) || hits.length >= ASK_MAX_FICHAS) continue;
+    const take = Math.min(String(n.body || '').trim().length, ASK_PER_FICHA);
+    if (chars + take > ASK_CHAR_BUDGET && hits.length) continue;   // skip the fat one, keep filling
+    hits.push(n); chars += take;
+  }
+  return { hits, considered };
+}
+
+function askContextBlock(hits) {
+  return hits.map(n => {
+    const i = ask.cites.push(n);                                    // stable [n] across the whole thread
     const prov = n.fm.provenance && n.fm.provenance !== 'human' ? ` · provenance:${n.fm.provenance}` : '';
-    const body = String(n.body || '').trim().slice(0, ASK_BODY_CHARS);
-    return `[${i + 1}] «${n.fm.title || n.slug}» (${n.folder}${prov})\n${body}`;
+    const date = n.fm.date ? ` · ${n.fm.date}` : '';
+    const body = String(n.body || '').trim().slice(0, ASK_PER_FICHA);
+    ask.seen.add(n.slug);
+    return `[${i}] «${n.fm.title || n.slug}» (${n.folder}${date}${prov})\n${body}`;
   }).join('\n\n---\n\n');
 }
 
-function renderAskAnswer(q, answer, hits) {
-  const panel = document.getElementById('claude-panel');
-  panel.classList.remove('hidden', 'error');
-  document.getElementById('claude-panel-title').textContent = q;
-  const body = document.getElementById('claude-panel-body');
-  body.className = 'panel-body';
-  const cites = hits.map((n, i) =>
-    `<button class="ask-cite" data-open="${escapeHtml(n.slug)}">[${i + 1}] ${escapeHtml(n.fm.title || n.slug)}</button>`).join('');
-  body.innerHTML = `<div class="ask-answer">${escapeHtml(answer)}</div>` +
-    `<div class="ask-cites"><span class="ask-cites-label">fichas consultadas</span>${cites}</div>`;
-  body.querySelectorAll('.ask-cite').forEach(b => b.addEventListener('click', () => {
-    view = { mode: 'note', drawer: view.drawer, slug: b.dataset.open, q: '' };
-    renderAll(); window.scrollTo({ top: 0 });
-    panel.classList.add('hidden');
-  }));
-  document.getElementById('claude-panel-foot').innerHTML =
-    `<span>${escapeHtml((state.settings.claude.model || '').split('-')[1] || 'claude')}</span><span>${new Date().toLocaleTimeString()}</span>`;
+function askSetSub(text) { document.getElementById('ask-sub').textContent = text || ''; }
+
+function askOpenNote(slug) {
+  if (!noteBySlug(slug)) { toast(`la ficha “${slug}” ya no está en la bodega.`); return; }
+  view = { mode: 'note', drawer: view.drawer, slug, q: '' };
+  renderAll(); window.scrollTo({ top: 0 });
+  if (window.matchMedia('(max-width: 880px)').matches) askClose();   // on phones the chat covers the folio
 }
 
-async function askArchivo() {
+// [n] in the answer → a click that opens ficha n. Run on rendered HTML, after mdRender.
+function askLinkRefs(html) {
+  return html.replace(/\[(\d{1,3})\]/g, (m, d) => {
+    const n = ask.cites[Number(d) - 1];
+    return n ? `<a class="ask-ref" data-cite="${escapeHtml(n.slug)}">[${d}]</a>` : m;
+  });
+}
+
+function askCitesBlock(notes) {
+  if (!notes.length) return '';
+  return `<details class="ask-cites"><summary>${notes.length} ficha${notes.length === 1 ? '' : 's'} leída${notes.length === 1 ? '' : 's'}</summary><div class="ask-cite-list">` +
+    notes.map(n => `<button class="ask-cite" data-cite="${escapeHtml(n.slug)}"><span class="n">[${ask.cites.indexOf(n) + 1}]</span> ${escapeHtml(n.fm.title || n.slug)}</button>`).join('') +
+    `</div></details>`;
+}
+
+function askWireCites(el) {
+  el.querySelectorAll('[data-cite]').forEach(b => b.addEventListener('click', e => { e.preventDefault(); askOpenNote(b.dataset.cite); }));
+  wireOpeners(el);                                                  // [[wikilinks]] the answer may echo
+}
+
+function askAtBottom() { return askThread.scrollHeight - askThread.scrollTop - askThread.clientHeight < 60; }
+function askScroll(force) { if (force || askAtBottom()) askThread.scrollTop = askThread.scrollHeight; }
+
+function askPushUser(text) {
+  const el = document.createElement('div');
+  el.className = 'ask-msg user';
+  el.textContent = text;
+  askThread.appendChild(el);
+  askScroll(true);
+}
+
+function askPushClaude() {
+  const el = document.createElement('div');
+  el.className = 'ask-msg claude';
+  el.innerHTML = `<div class="ask-who">✦ el archivero</div><div class="ask-prose"></div>`;
+  askThread.appendChild(el);
+  askScroll(true);
+  return el;
+}
+
+function askRenderEmpty() {
+  const starters = askStarters();
+  askThread.innerHTML =
+    `<div class="ask-empty">
+       <div class="mark">Preguntarle al archivo</div>
+       <div class="line">Responde solo desde tus fichas, cita cuáles leyó, y las citas abren el folio. Cada pregunta barre la bodega de nuevo.</div>
+       <div class="ask-starters">${starters.map(s => `<button class="ask-starter" type="button">${escapeHtml(s)}</button>`).join('')}</div>
+     </div>`;
+  askThread.querySelectorAll('.ask-starter').forEach(b => b.addEventListener('click', () => { askInput.value = b.textContent; askInput.focus(); askSubmit(); }));
+  askSetSub(corpus ? `${corpus.notes.length} fichas en la bodega` : '');
+}
+
+// starters from the corpus's own most-used tags — beats inventing generic prompts
+function askStarters() {
+  if (!corpus) return [];
+  const counts = new Map();
+  for (const n of corpus.notes) {
+    if (HIDDEN_FOLDERS.has(n.folder) || TICKET_FOLDERS.has(n.folder)) continue;
+    if (!Array.isArray(n.fm.tags)) continue;
+    for (const t of n.fm.tags) counts.set(t, (counts.get(t) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([t]) => `¿qué dice el archivo sobre ${t}?`);
+}
+
+function askReset() {
+  ask.turns = []; ask.cites = []; ask.seen = new Set(); ask.lastStats = null;
+  askRenderEmpty();
+  askInput.value = ''; askInput.style.height = 'auto';
+}
+
+function askOpen() {
   if (!corpus) { toast('trae la bodega primero (⟳).', true); return; }
   if (!isClaudeEnabled()) { toast('activa Claude en settings (pega tu API key).', true); openSettings(); return; }
-  const q = await askPrompt('Preguntarle al archivo', 'Claude responde solo desde tus fichas — y cita cuáles usó.');
-  if (!q) return;
-  const hits = searchNotes(q).slice(0, ASK_MAX_FICHAS);
-  if (!hits.length) {
-    showClaudePanel({ title: q, status: 'error', text: 'No hay fichas en la bodega que toquen eso. El archivo solo responde desde lo que guarda.' });
+  const panel = document.getElementById('ask-chat');
+  const wasHidden = panel.classList.contains('hidden');
+  panel.classList.remove('hidden');
+  if (wasHidden && !ask.turns.length) askRenderEmpty();
+  setTimeout(() => askInput.focus(), 60);
+}
+function askClose() { document.getElementById('ask-chat').classList.add('hidden'); }
+
+async function askSubmit() {
+  const q = askInput.value.trim();
+  if (!q || ask.busy) return;
+  askInput.value = ''; askInput.style.height = 'auto';
+  if (!ask.turns.length) askThread.innerHTML = '';
+  askPushUser(q);
+
+  const { hits, considered } = askGather(q);
+  if (!ask.turns.length && !hits.length) {
+    const el = askPushClaude();
+    el.classList.add('error');
+    el.querySelector('.ask-prose').textContent = 'No hay fichas en la bodega que toquen eso. El archivo solo responde desde lo que guarda.';
     return;
   }
-  showClaudePanel({ title: q, status: 'thinking', text: `leyendo ${hits.length} ficha${hits.length === 1 ? '' : 's'}…` });
-  try {
-    const answer = await callClaude({
-      system: ASK_SYSTEM,
-      userMessage: `Fichas del archivo (contexto):\n\n${buildAskContext(hits)}\n\n———\n\nPregunta: ${q}`,
-      maxTokens: 800,
+
+  const citeMark = ask.cites.length;                                 // rollback point if the turn dies
+  const block = askContextBlock(hits);
+  ask.turns.push({ role: 'user', content: block ? `Fichas nuevas del archivo (contexto):\n\n${block}\n\n———\n\nPregunta: ${q}` : q });
+  ask.lastStats = { read: ask.seen.size, considered };
+  askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto · ${considered} relevantes`);
+
+  const el = askPushClaude();
+  const prose = el.querySelector('.ask-prose');
+  prose.innerHTML = `<div class="ask-thinking">${hits.length ? `leyendo ${hits.length} ficha${hits.length === 1 ? '' : 's'}…` : 'pensando…'}</div>`;
+  ask.busy = true; askSendBtn.disabled = true;
+
+  // coalesce deltas to one paint per frame; `settled` stops a queued frame from
+  // overwriting the final render with stale text after the stream ends
+  let queued = false, latest = '', settled = false;
+  const paint = text => {
+    latest = text;
+    if (queued || settled) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      if (settled) return;
+      const pinned = askAtBottom();
+      prose.innerHTML = askLinkRefs(mdRender(latest)) + '<span class="ask-cursor"></span>';
+      askScroll(pinned);
     });
-    renderAskAnswer(q, answer, hits);
+  };
+
+  try {
+    const answer = await streamClaude({ system: ASK_SYSTEM, messages: ask.turns, maxTokens: 1600, onDelta: paint });
+    settled = true;
+    ask.turns.push({ role: 'assistant', content: answer });
+    prose.innerHTML = askLinkRefs(mdRender(answer));
+    if (hits.length) prose.insertAdjacentHTML('beforeend', askCitesBlock(hits));
+    askWireCites(prose);
+    askScroll();
   } catch (e) {
     console.error('ask', e);
-    showClaudePanel({ title: q, status: 'error', text: 'Claude no respondió: ' + e.message });
+    settled = true;
+    ask.turns.pop();                                                 // failed turn must not poison the thread
+    ask.cites.length = citeMark;                                     // …and its fichas must stay un-sent,
+    hits.forEach(n => ask.seen.delete(n.slug));                      // or a retry would omit them as "seen"
+    askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto`);
+    el.classList.add('error');
+    prose.textContent = 'Claude no respondió: ' + e.message;
+  } finally {
+    ask.busy = false; askSendBtn.disabled = false; askInput.focus();
   }
 }
-document.getElementById('ask-btn').addEventListener('click', askArchivo);
+
+document.getElementById('ask-btn').addEventListener('click', askOpen);
+document.getElementById('ask-close').addEventListener('click', askClose);
+document.getElementById('ask-new').addEventListener('click', () => { askReset(); askInput.focus(); });
+document.getElementById('ask-composer').addEventListener('submit', e => { e.preventDefault(); askSubmit(); });
+askInput.addEventListener('input', () => {
+  askInput.style.height = 'auto';
+  askInput.style.height = Math.min(askInput.scrollHeight, 132) + 'px';
+});
+askInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askSubmit(); }
+  if (e.key === 'Escape') { e.preventDefault(); askInput.blur(); askClose(); }
+});
 
 /* ── export / import (shell verbatim) ── */
 document.getElementById('export-btn').addEventListener('click', () => {
@@ -1141,8 +1382,10 @@ document.querySelectorAll('[data-close]').forEach(b => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    const modalWasOpen = settingsModal.open || promptModal.open;
     if (settingsModal.open) settingsModal.close();
     if (promptModal.open) { if (promptResolve) promptResolve(null); promptModal.close(); }
+    if (!modalWasOpen) askClose();                      // a modal on top of the chat eats the first esc
     const sb = document.querySelector('.sidebar'); if (sb?.classList.contains('show-as-sheet')) { sb.classList.remove('show-as-sheet'); document.getElementById('sheet-backdrop')?.classList.remove('show'); }
   }
 });
@@ -2523,7 +2766,11 @@ function _levenshteinLE2(a, b) {
 
 function _escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-function searchNotes(q) {
+function searchNotes(q) { return searchNotesScored(q).map(r => r.n); }
+
+// the ranker itself — scores kept, because the consulta desk sizes its retrieval
+// off the score curve (relevance floor), not off a fixed hit count
+function searchNotesScored(q) {
   const rawTokens = _norm(q).split(/[^a-z0-9]+/).filter(t => t.length > 1);
   if (!rawTokens.length) return [];
   const candidates = corpus.notes.filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
@@ -2585,8 +2832,7 @@ function searchNotes(q) {
   }
 
   return results
-    .sort((a, b) => b.score - a.score || String(b.n.fm.date || '').localeCompare(String(a.n.fm.date || '')))
-    .map(r => r.n);
+    .sort((a, b) => b.score - a.score || String(b.n.fm.date || '').localeCompare(String(a.n.fm.date || '')));
 }
 
 const searchInput = document.getElementById('search-input');
@@ -2603,7 +2849,7 @@ document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== searchInput && !settingsModal.open && !promptModal.open && !typing) {
     e.preventDefault(); searchInput.focus();
   } else if (e.key === '?' && !settingsModal.open && !promptModal.open && !typing) {
-    e.preventDefault(); askArchivo();
+    e.preventDefault(); askOpen();
   }
 });
 

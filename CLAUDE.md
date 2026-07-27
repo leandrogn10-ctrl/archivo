@@ -31,7 +31,12 @@ No Inter/Space Grotesk; don't reuse other apps' palettes.
   `[[wikilinks]]` resolve against corpus slugs (filename sans .md, must stay unique)
 - `renderDrawers/renderView` — catalogue (cards grouped by folder) vs folio (reader +
   backlinks scan); `view` is the tiny router
-- Search: `/` focuses, title(10)>tags(5)>body(1) scoring — the F14 seed
+- Search: `/` focuses, title(10)>tags(5)>body(1) scoring — the F14 seed. `searchNotesScored`
+  is the ranker; `searchNotes` is the names-only wrapper
+- Consulta desk (`?` or ✦ preguntar): multi-turn streamed chat over the corpus. Retrieval is
+  **budget-driven, never a fixed hit count** — every hit above 15% of the top score goes in
+  until `ASK_CHAR_BUDGET` is spent; follow-ups append only fichas the thread hasn't seen.
+  `ask.cites` keeps `[n]` numbering stable across the whole conversation
 
 ## Ship rule (SW pinning)
 **Every index.html change ships with a `sw.js` CACHE_NAME bump.** The SW is cache-first for
