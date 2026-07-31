@@ -40,8 +40,12 @@ No Inter/Space Grotesk; don't reuse other apps' palettes.
   **`max_tokens` covers thinking + answer** on opus-5/sonnet-5 (adaptive thinking is ON by
   default) — that's why `ASK_MAX_TOKENS` is 8k, not 1.6k; a `stop_reason: max_tokens` renders
   a "continuar" button instead of a severed sentence. One `cache_control` breakpoint rides the
-  newest user block so the next turn re-reads the ficha prefix at ~10% of input price;
-  `ASK_THREAD_BUDGET` caps cumulative ficha text so a long thread can't outgrow the window
+  newest user block so the next turn re-reads the ficha prefix at ~10% of input price.
+  `askThreadBudget()` caps cumulative ficha text and is **derived from the chosen model's
+  context window** (`ASK_MODEL_WINDOW`), never a constant — the old flat 520k-char ceiling was
+  sized for a 200k window and silently starved every follow-up once opus-5/sonnet-5 went to 1M.
+  When the budget can't fit a relevant unseen ficha, the turn appends a visible "hilo lleno"
+  line and the sub-header keeps saying so; degradation is never silent.
 
 ## Ship rule (SW pinning)
 **Every index.html change ships with a `sw.js` CACHE_NAME bump.** The SW is cache-first for

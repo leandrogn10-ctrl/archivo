@@ -293,6 +293,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .ask-cite .n { color: var(--c-dusty-fg); }
 
 .ask-cut { margin-top: 11px; padding-top: 8px; border-top: 1px dashed var(--accent-soft); display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--danger); }
+.ask-colofon { margin-top: 11px; padding-top: 7px; border-top: 1px solid var(--c-dusty-bd); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-faint); }
 .ask-continue { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.1em; color: var(--ink); border: 1px solid var(--accent-soft); border-radius: 2px; padding: 3px 9px; transition: background 0.14s, color 0.14s; }
 .ask-continue:hover { background: var(--accent); color: var(--bg); }
 
@@ -1126,15 +1127,38 @@ async function streamClaude({ system, messages, maxTokens = 8000, onDelta }) {
    so context accumulates instead of resetting.
    The app still never WRITES note content; this only reads the cache. */
 const ASK_CHAR_BUDGET  = 140000;   // ~35k tokens of ficha text per retrieval turn
-const ASK_THREAD_BUDGET = 520000;  // ~130k tokens of ficha text across the WHOLE thread —
-                                   // every turn re-sends the full transcript, so without a
-                                   // ceiling a 4-turn conversation walks into the context window
+/* The WHOLE-thread ficha ceiling is DERIVED from the chosen model's context window, never
+   a fixed number. It used to be a flat 520k chars (~130k tokens) — sized for a 200k-token
+   window that opus-5 and sonnet-5 left behind. The comment claimed it protected the window;
+   what it actually did was starve every follow-up past turn ~4 while 3/4 of the window sat
+   empty, and say nothing about it. If a model's window changes, change the table. */
+const ASK_MODEL_WINDOW = {         // input-token context window per model id
+  'claude-opus-5':   1000000,
+  'claude-sonnet-5': 1000000,
+  'claude-haiku-4-5': 200000,
+};
+const ASK_WINDOW_FALLBACK = 200000; // unknown model → assume the smallest window we ship
+const ASK_CHARS_PER_TOKEN = 3.5;   // ES/EN prose; deliberately low, so we under-fill, never over
+const ASK_WINDOW_SHARE = 0.45;     // fichas only — the rest holds the growing transcript,
+                                   // ASK_SYSTEM, and ASK_MAX_TOKENS of thinking + answer
+function askThreadBudget() {
+  const win = ASK_MODEL_WINDOW[state.settings.claude.model] || ASK_WINDOW_FALLBACK;
+  return Math.round(win * ASK_WINDOW_SHARE * ASK_CHARS_PER_TOKEN);
+}
 const ASK_PER_FICHA   = 7000;      // p90 ficha is ~11k chars → most arrive whole
 const ASK_MAX_FICHAS  = 60;        // ceiling, not a target
 const ASK_SCORE_FLOOR = 0.15;      // drop hits under 15% of the top hit — junk, not depth
 const ASK_MAX_TOKENS  = 8000;      // thinking + answer share this budget on opus-5/sonnet-5:
                                    // adaptive thinking is ON by default, so a tight cap
                                    // truncated the ANSWER mid-sentence (the Jul 27 bug)
+/* USD per MTok, Anthropic list prices (jun 2026). Cache economics are DERIVED, not tabulated:
+   reads bill at 0.1× input, 5-min-TTL writes at 1.25× — if a price moves, edit this table only.
+   An unlisted model renders the colofón without the $ figure rather than inventing one. */
+const ASK_PRICE = {
+  'claude-opus-5':    { in: 5, out: 25 },
+  'claude-sonnet-5':  { in: 3, out: 15 },
+  'claude-haiku-4-5': { in: 1, out: 5 },
+};
 const ASK_SYSTEM =
   "You are El Archivero, the archivist of Leandro's private knowledge corpus (El Archivo). " +
   "Answer USING ONLY the numbered fichas given as context across the conversation.\n" +
@@ -1149,9 +1173,10 @@ const ask = {
   turns: [],          // [{ role, content }] — the API transcript, plain strings
   cites: [],          // notes, in citation order; index+1 is the [n] the model sees
   seen: new Set(),    // slugs already shipped as context
-  chars: 0,           // ficha text shipped so far this thread (vs ASK_THREAD_BUDGET)
+  chars: 0,           // ficha text shipped so far this thread (vs askThreadBudget())
   busy: false,
   lastStats: null,    // { read, considered } from the most recent retrieval
+  usage: [],          // per-turn API usage — the desk's receipts (see askColofon)
 };
 const askThread = document.getElementById('ask-thread');
 const askInput = document.getElementById('ask-input');
@@ -1163,19 +1188,23 @@ function askGather(q) {
   const scored = searchNotesScored(q);
   if (!scored.length) return { hits: [], considered: 0, chars: 0 };
   // the thread's remaining headroom caps this turn — a late follow-up gets what's left, not a full 140k
-  const budget = Math.min(ASK_CHAR_BUDGET, Math.max(0, ASK_THREAD_BUDGET - ask.chars));
+  const left = Math.max(0, askThreadBudget() - ask.chars);
+  const budget = Math.min(ASK_CHAR_BUDGET, left);
+  // WHICH ceiling bound this turn decides whether a dropped ficha is bad news: under the
+  // per-turn cap it simply arrives on the next question, under the thread cap it never does
+  const boundByThread = left < ASK_CHAR_BUDGET;
   const floor = scored[0].score * ASK_SCORE_FLOOR;
   const hits = [];
-  let chars = 0, considered = 0;
+  let chars = 0, considered = 0, starved = 0;                      // starved: relevant, unseen, didn't fit
   for (const { n, score } of scored) {
     if (score < floor) break;
     considered++;
     if (ask.seen.has(n.slug) || hits.length >= ASK_MAX_FICHAS) continue;
     const take = Math.min(String(n.body || '').trim().length, ASK_PER_FICHA);
-    if (chars + take > budget) continue;                           // skip the fat one, keep filling
+    if (chars + take > budget) { starved++; continue; }            // skip the fat one, keep filling
     hits.push(n); chars += take;
   }
-  return { hits, considered, chars };
+  return { hits, considered, chars, starved: boundByThread ? starved : 0 };
 }
 
 function askContextBlock(hits) {
@@ -1189,7 +1218,53 @@ function askContextBlock(hits) {
   }).join('\n\n---\n\n');
 }
 
-function askSetSub(text) { document.getElementById('ask-sub').textContent = text || ''; }
+function askSetSub(text) { const el = document.getElementById('ask-sub'); el.textContent = text || ''; el.title = text || ''; }   // ellipsis eats the tail on narrow panels — hover keeps it honest
+
+/* The sub-header is the only always-visible readout of thread state, so it has to admit when
+   the ficha budget is spent. Left implicit, a starved follow-up reads as "el archivero olvidó
+   lo que acabamos de hablar" — the conversation is intact, it just stopped getting new fichas. */
+function askSub(considered) {
+  const n = ask.seen.size;
+  let s = `${n} ficha${n === 1 ? '' : 's'} en contexto`;
+  if (considered != null) s += ` · ${considered} relevantes`;
+  if (ask.chars >= askThreadBudget()) s += ' · hilo lleno';
+  if (ask.usage.length) {
+    const total = ask.usage.reduce((t, u) => t + (askTurnCost(u) || 0), 0);
+    if (total > 0) s += ` · ~${askUsd(total)}`;
+  }
+  return s;
+}
+
+/* El colofón — the printer's mark at the foot of each answer. The API itemizes every ask
+   (uncached input, cache reads, cache writes, output) and streamClaude has always carried
+   that receipt home; until Jul 31 the desk dropped it unread. Surfacing it IS the cache
+   verification: 'X% en caché' near zero on a quick follow-up means a silent invalidator;
+   near zero on a slow one means the pondering outlives the 5-minute TTL. */
+function askFmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0k?$/, '') + 'k' : String(n); }
+function askUsd(c) { return '$' + (c < 0.01 ? c.toFixed(3) : c.toFixed(2)); }
+function askTurnCost(u) {
+  const p = ASK_PRICE[state.settings.claude.model];
+  if (!p) return null;
+  return ((u.input_tokens || 0) * p.in + (u.cache_read_input_tokens || 0) * p.in * 0.1
+        + (u.cache_creation_input_tokens || 0) * p.in * 1.25 + (u.output_tokens || 0) * p.out) / 1e6;
+}
+function askColofon(u) {
+  const read = u.cache_read_input_tokens || 0, wrote = u.cache_creation_input_tokens || 0;
+  const prompt = (u.input_tokens || 0) + read + wrote;   // input_tokens is the UNCACHED remainder only
+  const pct = prompt ? Math.round(100 * read / prompt) : 0;
+  const cost = askTurnCost(u);
+  return `<div class="ask-colofon">${askFmtK(prompt)} in · ${pct}% en caché · ${askFmtK(u.output_tokens || 0)} out${cost != null ? ' · ' + askUsd(cost) : ''}</div>`;
+}
+
+// a starved turn leaves a mark IN the thread — a toast scrolls away, the confusion doesn't
+function askPushStarved(n) {
+  const el = document.createElement('div');
+  el.className = 'ask-cut';
+  const s = n === 1 ? '1 ficha relevante no cupo' : `${n} fichas relevantes no cupieron`;
+  el.innerHTML = `<span>hilo lleno — ${escapeHtml(s)}; responde con lo ya cargado. ✎ para un hilo nuevo.</span>`;
+  askThread.appendChild(el);
+  askScroll(true);
+}
 
 function askOpenNote(slug) {
   if (!noteBySlug(slug)) { toast(`la ficha “${slug}” ya no está en la bodega.`); return; }
@@ -1265,6 +1340,7 @@ function askStarters() {
 
 function askReset() {
   ask.turns = []; ask.cites = []; ask.seen = new Set(); ask.chars = 0; ask.lastStats = null;
+  ask.usage = [];
   askRenderEmpty();
   askInput.value = ''; askInput.style.height = 'auto';
 }
@@ -1287,18 +1363,16 @@ async function askSubmit() {
   if (!ask.turns.length) askThread.innerHTML = '';
   askPushUser(q);
 
-  const { hits, considered, chars } = askGather(q);
+  const { hits, considered, chars, starved } = askGather(q);
   if (!ask.turns.length && !hits.length) {
     const el = askPushClaude();
     el.classList.add('error');
     el.querySelector('.ask-prose').textContent = 'No hay fichas en la bodega que toquen eso. El archivo solo responde desde lo que guarda.';
     return;
   }
-  // thread full: it can still answer from what's already loaded, but say so —
-  // silently dropping fresh fichas would look like the archive forgot them
-  if (considered && !hits.length && ask.chars >= ASK_THREAD_BUDGET) {
-    toast('hilo lleno: responde con lo ya cargado. ✎ para una conversación nueva.');
-  }
+  // budget spent: it can still answer from what's already loaded, but say so — silently
+  // dropping fresh fichas is what makes a follow-up look like the archive forgot the thread
+  if (starved) askPushStarved(starved);
 
   const citeMark = ask.cites.length;                                 // BEFORE askContextBlock — it pushes cites
   const block = askContextBlock(hits);
@@ -1326,7 +1400,7 @@ function askApiMessages() {
    a continuation turn passes none. */
 async function askRun(userContent, { hits = [], considered = null, citeMark = ask.cites.length, chars = 0 } = {}) {
   ask.turns.push({ role: 'user', content: userContent });
-  askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto${considered === null ? '' : ` · ${considered} relevantes`}`);
+  askSetSub(askSub(considered));
 
   const el = askPushClaude();
   const prose = el.querySelector('.ask-prose');
@@ -1350,7 +1424,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
   };
 
   try {
-    const { text: answer, stopReason } = await streamClaude({
+    const { text: answer, stopReason, usage } = await streamClaude({
       system: ASK_SYSTEM, messages: askApiMessages(), maxTokens: ASK_MAX_TOKENS, onDelta: paint,
     });
     settled = true;
@@ -1358,6 +1432,11 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
     prose.innerHTML = askLinkRefs(mdRender(answer));
     if (hits.length) prose.insertAdjacentHTML('beforeend', askCitesBlock(hits));
     if (stopReason === 'max_tokens') prose.insertAdjacentHTML('beforeend', askContinueBlock());
+    if (usage) {                                                     // the receipt, finally read
+      ask.usage.push(usage);
+      prose.insertAdjacentHTML('beforeend', askColofon(usage));
+      askSetSub(askSub(considered));                                 // running thread tally
+    }
     askWireCites(prose);
     prose.querySelector('.ask-continue')?.addEventListener('click', ev => {
       ev.target.closest('.ask-cut')?.remove();
@@ -1371,7 +1450,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
     ask.cites.length = citeMark;                                     // …and its fichas must stay un-sent,
     hits.forEach(n => ask.seen.delete(n.slug));                      // or a retry would omit them as "seen"
     ask.chars = Math.max(0, ask.chars - chars);                      // …and must not eat the thread budget
-    askSetSub(`${ask.seen.size} ficha${ask.seen.size === 1 ? '' : 's'} en contexto`);
+    askSetSub(askSub());
     el.classList.add('error');
     prose.textContent = 'Claude no respondió: ' + e.message;
   } finally {
