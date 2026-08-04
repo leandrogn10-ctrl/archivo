@@ -709,6 +709,13 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
               <option value="claude-haiku-4-5">Haiku — fast & cheap</option>
             </select>
           </label>
+          <label>Billing
+            <select id="claude-mode">
+              <option value="auto">Auto — Max plan, key as backup</option>
+              <option value="sub">Max plan only</option>
+              <option value="api">API key only</option>
+            </select>
+          </label>
           <label>&nbsp;
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
               <button class="btn-primary" id="claude-save-btn" type="button">Save</button>
@@ -848,6 +855,9 @@ function migrate(s) {
   s.settings.claudeRules = s.settings.claudeRules ?? DEFAULT_CLAUDE_RULES;
   s.settings.sync = s.settings.sync || { enabled: false, githubPat: null, gistId: null, lastSyncedAt: null };
   s.settings.claude = s.settings.claude || { enabled: false, apiKey: null, model: 'claude-opus-5' };
+  // Billing path, added after `claude` shipped — a restored pre-mode snapshot arrives with
+  // mode === undefined, so merge over the default rather than trusting the saved object wholesale.
+  s.settings.claude.mode = s.settings.claude.mode || 'auto';   // 'auto' | 'sub' | 'api'
   // normalize legacy / date-suffixed model IDs to the current same-or-newer option in the tier
   s.settings.claude.model = ({
     'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
@@ -918,6 +928,7 @@ function openSettings() {
   document.getElementById('claude-rules').value = state.settings.claudeRules || DEFAULT_CLAUDE_RULES;
   document.getElementById('claude-api-key').value = state.settings.claude.apiKey || '';
   document.getElementById('claude-model').value = state.settings.claude.model || 'claude-opus-5';
+  document.getElementById('claude-mode').value = claudeMode();
   document.getElementById('sync-pat').value = state.settings.sync.githubPat || '';
   document.getElementById('sync-gist-id').value = state.settings.sync.gistId || '';
   document.getElementById('corpus-repo').value = state.corpus.repo;
@@ -930,6 +941,8 @@ document.getElementById('sync-pip').addEventListener('click', openSettings);
 
 document.getElementById('claude-rules').addEventListener('input', e => { state.settings.claudeRules = e.target.value; save(); });
 document.getElementById('claude-model').addEventListener('change', e => { state.settings.claude.model = e.target.value; save(); });
+// Device-local on purpose: the helper only exists on the Mac, so this must NOT ride the sync payload.
+document.getElementById('claude-mode').addEventListener('change', e => { state.settings.claude.mode = e.target.value; save(); renderClaudeStatus(); });
 document.getElementById('corpus-repo').addEventListener('input', e => { state.corpus.repo = e.target.value.trim() || 'leandrogn10-ctrl/archivo-corpus'; save(); });
 document.getElementById('corpus-branch').addEventListener('input', e => { state.corpus.branch = e.target.value.trim() || 'main'; save(); });
 document.getElementById('claude-save-btn').addEventListener('click', () => {
@@ -942,14 +955,29 @@ document.getElementById('claude-save-btn').addEventListener('click', () => {
 });
 document.getElementById('claude-disable-btn').addEventListener('click', () => {
   if (!confirm('Forget your API key?')) return;
-  state.settings.claude = { enabled: false, apiKey: null, model: state.settings.claude.model };
+  // `mode` rides along: forgetting the key must not silently reset the billing choice.
+  state.settings.claude = { enabled: false, apiKey: null, model: state.settings.claude.model, mode: state.settings.claude.mode };
   save(); document.getElementById('claude-api-key').value = ''; renderClaudeStatus(); toast('key cleared.');
 });
 
 function renderClaudeStatus() {
   const el = document.getElementById('claude-status');
-  if (!isClaudeEnabled()) { el.textContent = 'disabled · paste a key to enable'; el.className = 'sync-status'; return; }
-  el.textContent = `enabled · ${state.settings.claude.model.split('-')[1]}`;
+  if (!el) return;
+  const mode = claudeMode();
+  if (!isClaudeEnabled()) {
+    el.textContent = mode === 'sub'
+      ? 'disabled · Max-plan-only, but the helper is not reachable from here'
+      : 'disabled · paste a key to enable';
+    el.className = 'sync-status'; return;
+  }
+  // What the setting says will happen, plus what actually served the last call — the second is
+  // the part that was missing, since 'auto' can swap paths without saying so.
+  const plan = mode === 'sub' ? 'Max plan only'
+             : mode === 'api' ? 'API key only'
+             : (losReachable() ? 'auto · Max plan, key as backup' : 'auto · key (helper unreachable here)');
+  const via = CLAUDE_VIA === 'sub' ? ' · last call: Max plan'
+            : CLAUDE_VIA === 'api' ? ' · last call: API key' : '';
+  el.textContent = `enabled · ${state.settings.claude.model.split('-')[1]} · ${plan}${via}`;
   el.className = 'sync-status ok';
 }
 function renderCorpusStatus() {
@@ -1081,9 +1109,95 @@ document.getElementById('sync-disable-btn').addEventListener('click', () => {
   toast('credentials cleared.');
 });
 
+/* ── Max-plan (subscription) path ─────────────────────────────────────────────
+   Routes a call through the local LeandroOS helper (~/.leandro-os/los-music-helper.py, a launchd
+   agent), which shells the logged-in Claude Code CLI with ANTHROPIC_API_KEY stripped from its env
+   — so it bills the Max plan's usage window instead of API credits. The helper grants this origin
+   a SCOPED token good only for /claude/*, never /project/*. Reachable from file:// and from the
+   deployed Pages origin (both already on the helper's allowlist); from the phone, where 127.0.0.1
+   is the phone itself, the 2.5s pair times out and we fall back to the key. */
+const LOS_HELPER_URL = 'http://127.0.0.1:17654';
+function losReachable() {
+  return location.protocol === 'file:' || location.origin === 'https://leandrogn10-ctrl.github.io';
+}
+let losToken = null, losTokenPromise = null;
+function losPair() {
+  if (losToken !== null) return Promise.resolve(losToken);
+  if (losTokenPromise) return losTokenPromise;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2500);   // fail fast — a missing helper must not stall the desk
+  losTokenPromise = fetch(LOS_HELPER_URL + '/pair', { cache: 'no-store', signal: ac.signal })
+    .then(r => r.json()).then(d => { losToken = (d && d.token) || ''; return losToken; })
+    .catch(e => { losTokenPromise = null; throw e; })
+    .finally(() => clearTimeout(timer));
+  return losTokenPromise;
+}
+function losModelAlias(id) {   // the CLI's --model takes a short alias, not the API's full model id
+  const s = (id || '').toLowerCase();
+  return s.includes('opus') ? 'opus' : s.includes('haiku') ? 'haiku' : 'sonnet';
+}
+function losFlatten(messages) {   // the CLI takes ONE prompt → a multi-turn thread renders as a transcript
+  if (messages.length === 1) return messages[0].content;
+  return messages.map(m => (m.role === 'user' ? 'Leandro' : 'Claude') + ': ' + m.content).join('\n\n');
+}
+// Streams the helper's SSE; onDelta (optional) receives the CUMULATIVE text, matching streamClaude.
+async function callClaudeSub({ system, messages, model, maxTokens, onDelta, signal }) {
+  const tok = await losPair();
+  const ac = new AbortController();
+  if (signal) signal.addEventListener('abort', () => ac.abort());
+  const timer = setTimeout(() => ac.abort(), 90000);   // matches the helper's own CLAUDE_TIMEOUT
+  let res;
+  try {
+    res = await fetch(LOS_HELPER_URL + '/claude', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LOS-Token': tok || '' },
+      body: JSON.stringify({ system: system || '', prompt: losFlatten(messages), model: losModelAlias(model), max_tokens: maxTokens }),
+      signal: ac.signal,
+    });
+  } finally { clearTimeout(timer); }
+  if (!res.ok || !res.body) throw new Error('helper HTTP ' + res.status);
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = '', text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 2);
+      if (line.indexOf('data:') !== 0) continue;
+      const payload = line.slice(5).trim(); if (!payload) continue;
+      let ev; try { ev = JSON.parse(payload); } catch { continue; }
+      if (ev.t != null) { text += ev.t; onDelta?.(text); }
+      else if (ev.error) throw new Error(ev.error);
+      else if (ev.done) return text;
+    }
+  }
+  return text;
+}
+/* Which billing path a call may take, given the setting and where we're running. */
+function claudeMode() { return state.settings.claude.mode || 'auto'; }
+function canUseSub() { return claudeMode() !== 'api' && losReachable(); }
+function canUseApi()  { return claudeMode() !== 'sub' && !!state.settings.claude.apiKey; }
+// Last path that actually served, for the Setup readout. Session-only on purpose — a persisted
+// value would still claim "Max plan" after a reload onto an origin that can't reach the helper.
+let CLAUDE_VIA = null;
+function noteVia(v) { CLAUDE_VIA = v; try { renderClaudeStatus(); } catch (e) {} }
+
 /* ── Claude plumbing (shell verbatim) ── */
-function isClaudeEnabled() { return !!(state.settings.claude.enabled && state.settings.claude.apiKey); }
+function isClaudeEnabled() { return !!(state.settings.claude.enabled && (canUseApi() || canUseSub())); }
 async function callClaude({ system, userMessage, maxTokens = 350 }) {
+  if (canUseSub()) {
+    try {
+      const t = await callClaudeSub({ system: system ?? appBuildClaudeSystem(), messages: [{ role: 'user', content: userMessage }], model: state.settings.claude.model, maxTokens });
+      noteVia('sub');
+      return t;
+    } catch (e) {
+      // 'sub' is a hard commitment — surface it rather than silently spending API credits.
+      if (claudeMode() === 'sub') { noteVia(null); throw new Error('Max-plan helper unreachable (' + e.message + ') — is los-music-helper running?'); }
+      console.warn('[claude] Max-plan path unavailable, falling back to the API key:', e.message);
+    }
+  }
+  if (!state.settings.claude.apiKey) throw new Error('no API key, and the Max-plan helper is unreachable');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.claude.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
@@ -1096,12 +1210,27 @@ async function callClaude({ system, userMessage, maxTokens = 350 }) {
     throw new Error(msg);
   }
   const data = await res.json();
+  noteVia('api');
   return data.content?.find(b => b.type === 'text')?.text || '(empty response)';   // sonnet-5+ can lead with a `thinking` block — [0] is not always the answer
 }
 /* streaming twin of callClaude — same auth, SSE deltas handed to onDelta as they land.
    Returns { text, stopReason, usage }: the desk needs stopReason to detect a
    `max_tokens` cut and offer to continue instead of leaving a severed sentence. */
 async function streamClaude({ system, messages, maxTokens = 8000, onDelta }) {
+  if (canUseSub()) {
+    try {
+      const text = await callClaudeSub({ system, messages, model: state.settings.claude.model, maxTokens, onDelta });
+      noteVia('sub');
+      // usage is null by construction: the CLI reports no token receipt, so the desk's colofón and
+      // running tally are skipped (both already guard on `usage`). stopReason is null too — the CLI
+      // ends its own turn, so there is no max_tokens cut to offer a continuation for.
+      return { text, stopReason: null, usage: null };
+    } catch (e) {
+      if (claudeMode() === 'sub') { noteVia(null); throw new Error('Max-plan helper unreachable (' + e.message + ') — is los-music-helper running?'); }
+      console.warn('[ask] Max-plan path unavailable, falling back to the API key:', e.message);
+    }
+  }
+  if (!state.settings.claude.apiKey) throw new Error('no API key, and the Max-plan helper is unreachable');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.claude.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
@@ -1139,6 +1268,7 @@ async function streamClaude({ system, messages, maxTokens = 8000, onDelta }) {
       }
     }
   }
+  noteVia('api');
   return { text: out, stopReason, usage };
 }
 
@@ -1461,6 +1591,11 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
       ask.usage.push(usage);
       prose.insertAdjacentHTML('beforeend', askColofon(usage));
       askSetSub(askSub(considered));                                 // running thread tally
+    } else {
+      // No receipt means the Max-plan path served this turn — the CLI itemizes nothing. Say so
+      // in the colofón's place: an answer with no mark at all reads as a rendering bug, and the
+      // whole point of the Billing setting is that the path in use is never a guess.
+      prose.insertAdjacentHTML('beforeend', '<div class="ask-colofon">plan Max · sin medidor de tokens</div>');
     }
     askWireCites(prose);
     prose.querySelector('.ask-continue')?.addEventListener('click', ev => {
