@@ -983,6 +983,10 @@ function renderClaudeStatus() {
 function renderCorpusStatus() {
   const el = document.getElementById('corpus-status');
   if (!corpus) { el.textContent = 'never pulled — ⟳ in the topbar'; el.className = 'sync-status'; return; }
+  if (corpusCacheError) {
+    el.textContent = `${corpus.notes.length} fichas (in memory only) · cache write failed: ${String(corpusCacheError.message || corpusCacheError).slice(0, 100)}`;
+    el.className = 'sync-status err'; return;
+  }
   el.textContent = `${corpus.notes.length} fichas · pulled ${new Date(corpus.fetchedAt).toLocaleString()}`;
   el.className = 'sync-status ok';
 }
@@ -1988,7 +1992,13 @@ async function ghWrite(method, path, bodyObj) {
   if (!res.ok) { const t = await res.text(); throw new Error(`${res.status} — ${t.slice(0, 100)}`); }
   return res;
 }
-function saveCorpusCache() { idbCorpusSet(corpus).catch(e => console.warn('corpus cache write', e)); }
+let corpusCacheError = null;   // last IDB write failure, surfaced in settings — see renderCorpusStatus
+function saveCorpusCache() {
+  idbCorpusSet(corpus).then(() => { corpusCacheError = null; }).catch(e => {
+    corpusCacheError = e; console.warn('corpus cache write', e);
+    if (document.getElementById('corpus-status')) renderCorpusStatus();
+  });
+}
 
 /* ── La Baraja (F2 slice 2): per-class recall-card curation. Archivo GENERATES + CURATES;
    the hub (Leandro OS) only deals what this saves to cards/<course>.json in the corpus.
@@ -2589,7 +2599,10 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · not mine', hitos: 'Hitos · milestones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría' };
+const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · obra huérfana', hitos: 'Hitos · milestones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría', 'sello-ajeno': 'Sello ajeno · otra pluma' };
+// 'Ajeno · not mine' read as a provenance filter and was one — of a 15-note shelf, while 810
+// fichas wore the sello across every other drawer. The shelf keeps its real job (homeless
+// works); the lens below answers "not mine".
 const HIDDEN_FOLDERS = new Set(['contexto']);          // expedientes render inline on persona folios, never as cards
 const TICKET_FOLDERS = new Set(['auditoria']);         // work tickets: own drawer, excluded from Todo + search
 const TYPE_STAMP = {
@@ -2604,9 +2617,17 @@ const TYPE_ES = {
   coaching: 'coaching', fragment: 'fragmento', persona: 'persona'
 };
 
+/* The sello lens: provenance is orthogonal to folder (corpus README), so "not my pluma" can
+   never be a shelf. `ajeno/` holds only the HOMELESS non-his works — an external debate case
+   lives in casos/ and an external reading digest in fuentes/, each wearing the sello. Reading
+   the shelf count as the not-mine count undercounts by ~50×. */
+const SELLO_DRAWER = 'sello-ajeno';
+
 function notesFor(drawer) {
   if (!corpus) return [];
   if (drawer === 'todo') return corpus.notes.filter(n => !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
+  if (drawer === SELLO_DRAWER) return corpus.notes.filter(n => n.fm.provenance === 'external'
+    && !HIDDEN_FOLDERS.has(n.folder) && !TICKET_FOLDERS.has(n.folder));
   return corpus.notes.filter(n => n.folder === drawer);
 }
 
@@ -2620,6 +2641,9 @@ function renderDrawers() {
   let html = `<li data-drawer="todo" class="${view.mode === 'list' && view.drawer === 'todo' ? 'active' : ''}"><span>Todo el archivo</span><span class="count">${total}</span></li>`;
   const nCourses = corpus ? new Set(corpus.notes.filter(n => n.fm.course).map(n => n.fm.course)).size : 0;   // the cross-drawer class lens
   html += `<li data-nav="classes" class="${view.mode === 'classes' || view.mode === 'class' ? 'active' : ''}"><span>Clases · by class</span><span class="count">${nCourses}</span></li>`;
+  // the cross-drawer sello lens — same shape as Clases, reads provenance instead of course
+  const nSello = notesFor(SELLO_DRAWER).length;
+  html += `<li data-drawer="${SELLO_DRAWER}" class="${view.mode === 'list' && view.drawer === SELLO_DRAWER ? 'active' : ''}"><span>${FOLDER_LABELS[SELLO_DRAWER]}</span><span class="count">${nSello}</span></li>`;
   folders.forEach(f => {
     const c = corpus.notes.filter(n => n.folder === f).length;
     html += `<li data-drawer="${escapeHtml(f)}" class="${view.mode === 'list' && view.drawer === f ? 'active' : ''}"><span>${escapeHtml(FOLDER_LABELS[f] || f)}</span><span class="count">${c}</span></li>`;
@@ -3401,7 +3425,8 @@ function renderView() {
     root.innerHTML = `<div class="empty-state"><div class="ornament">❧</div><h3>${q ? 'nada en los cajones' : 'cajón vacío'}</h3><p>${q ? 'Ninguna ficha contiene eso. El barrido (Fase B) llenará los estantes.' : 'Aún no hay fichas aquí.'}</p></div>`;
     return;
   }
-  if (!q && view.drawer === 'todo') {
+  // the sello lens groups by folder too — the point of it is seeing WHERE the sello lands
+  if (!q && (view.drawer === 'todo' || view.drawer === SELLO_DRAWER)) {
     const folders = [...new Set(notes.map(n => n.folder))].filter(Boolean).sort();
     root.innerHTML = `<div class="cards">` + folders.map(f =>
       `<div class="group-label">${escapeHtml(FOLDER_LABELS[f] || f)}</div>` +
@@ -3480,6 +3505,12 @@ function wireOpeners(root) {
 
 const CORPUS_STALE_MS = 30 * 60 * 1000;   // auto-refresh the bodega when the cache is older than 30 min
 async function initArchivo() {
+  // Ask Chrome to exempt this origin's storage from best-effort eviction. Without this the
+  // corpus cache is the first thing thrown out under disk pressure — it silently vanished
+  // Aug 3 when the Mac hit ~1GB free, forcing a ~2900-request cold repull (2919 fichas,
+  // one contents-API call each) against a 5000/hr GitHub quota. persist() is a no-op if
+  // already granted; installed PWAs like this one are usually auto-granted, no prompt.
+  if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   corpus = await loadCorpusCache();              // IDB answers in ms; boot paints, this re-paints
   if (corpus && !corpus.notes) corpus = null;   // stale/foreign cache shape → refetch
   if (corpus) renderAll();
