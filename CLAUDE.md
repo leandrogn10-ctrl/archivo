@@ -18,11 +18,21 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   human verdicts: single frontmatter fields, contents-API PUT, sha-guarded, commit message
   `veto: …`). The app never generates or edits note *content*; that's the sweep's job or git.
 
-## Identity — Archivo General de la Nación
-Verde archivo + manila ink, **sello rojo** accent (#c8553d), brass gold. Themes: `archivo`
-(night reading room) / `folio` (manila light). Type: Libre Caslon Text (folio serif),
-Special Elite (rubber stamps ONLY — badges, group labels), JetBrains Mono (chrome).
-No Inter/Space Grotesk; don't reuse other apps' palettes.
+## Identity — Archivo General de la Nación, V2 «El Canto» (en vivo desde Ago 5 2026)
+**Fraunces** carries every piece of content (opsz pinned to 14 in the wordmark so it reads
+printed, not editorial); **Geist** carries the chrome at three sizes (15/13/11) and one
+tracking; **Special Elite** is stamps ONLY — never chrome. **No monospace anywhere.**
+UNA sola sala: the old `folio` (manila light) theme was retired and `migrate()` deletes
+`settings.theme` at schema 6. The hour drives the panorama's light, not the room.
+Palette: the room CITES LeandroOS's 39-colour city ramp, published as `--p0…--p38` by
+`publishPalette()` and aliased in `SLOT:APP-THEME` — **every alias cites, nothing copies a
+hex**, and each `var(--pN)` carries a literal fallback because CSS resolves before JS runs.
+Sello rojo (#c8553d = p38) stays the only loud voice. Don't reuse other apps' palettes.
+
+**Los prototipos y los documentos de diseño (`identity-pitches/`, `REDESIGN.md`,
+`PORT-V2-PLAN.md`, `prototype-v2.html`) NO viven en este repo**: su corpus de muestra usa
+títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
+`v2-canto-fase1`. Si vuelven, que sea con datos inventados.
 
 ## Domain code map (all in index.html, below the shell plumbing)
 - `pullCorpus()` — tree API → contents API in batches of 6; README.md excluded
