@@ -471,6 +471,14 @@ mark{background:rgba(201,143,82,.24);color:#f6e3c6;border-radius:0;padding:0 1px
   transition:background-color .12s var(--ease),border-color .12s var(--ease);
 }
 .tail:hover{background:var(--s2);border-color:var(--hair)}
+/* la escalada de pago se ve distinta de la cola de débiles: es cian —el color
+   del buscador y de la consulta— y no gris, porque no es «más de lo mismo». */
+.tail.ask-esc{border-color:color-mix(in srgb,var(--live) 30%,transparent);
+  color:var(--ink-2);display:flex;align-items:center;gap:8px}
+.tail.ask-esc b{color:var(--live);font-weight:500}
+.tail.ask-esc kbd{margin-left:auto}
+.tail.ask-esc:hover{background:color-mix(in srgb,var(--live) 9%,var(--s1));
+  border-color:color-mix(in srgb,var(--live) 55%,transparent)}
 .tail b{color:var(--ink);font-weight:500}
 .empty{padding:64px 16px;text-align:center}
 .empty .orn{font-family:var(--serif);font-style:italic;font-size:56px;line-height:1;
@@ -1861,6 +1869,27 @@ function askOpen() {
   setTimeout(() => askInput.focus(), 60);
 }
 function askClose() { document.getElementById('ask-chat').classList.add('hidden'); }
+
+/* ── ESCALAR, NO REEMPEZAR (REDESIGN §D.1) ────────────────────────────
+   Lo que escribiste en el buscador pasa TAL CUAL a la consulta y se envía:
+   no hay que copiarlo, ni reformularlo, ni volver a decidir cómo se decía.
+   La búsqueda local es gratis y por tecla; esto cuesta y por eso es un gesto
+   aparte y explícito — Claude sólo entra cuando la búsqueda ya te falló, y
+   la búsqueda fallida ES el contexto.
+   El gradiente económico obliga a acotarlo con pinzas (§E): SÓLO con el
+   cursor dentro del buscador y SÓLO con algo escrito. En cualquier otro
+   sitio ⌘↵ y ⇧↵ pertenecen a los compositores de texto, y una llamada
+   pagada por accidente es un bug de coste, no una molestia. */
+function escalarAConsulta() {
+  const q = searchInput.value.trim();
+  if (!q) return false;
+  if (!corpus || !isClaudeEnabled()) { askOpen(); return true; }   // askOpen ya explica qué falta
+  searchInput.blur();
+  askOpen();
+  askInput.value = q;
+  askSubmit();
+  return true;
+}
 
 async function askSubmit() {
   const q = askInput.value.trim();
@@ -3839,6 +3868,12 @@ const moreHtml = () => LIST.shown < LIST.items.length
   ? `<div class="more" id="more"><span class="lbl">quedan <b>${fmtNum(LIST.items.length - LIST.shown)}</b> — siguen al bajar</span></div>` : '';
 /* La cola de débiles NO puede aparecer mientras queden fuertes sin pintar:
    prometería un final que no es. Sólo cuando la ventana ya agotó la lista. */
+/* La misma puerta, para quien no la sabe de memoria: una fila fijada al pie
+   de CUALQUIER lista de resultados. Sin ella el gesto existe pero es
+   invisible, y un atajo que nadie descubre no está construido. */
+const askRowHtml = () => LIST.q.trim()
+  ? `<div class="tail ask-esc" id="ask-esc">✦ Preguntarle al archivo por
+       <b>«${escapeHtml(LIST.q.trim())}»</b> <kbd>⌘↵</kbd></div>` : '';
 const tailHtml = () => (LIST.shown >= LIST.items.length && LIST.weak.length && !LIST.showWeak)
   ? `<div class="tail" id="tail">Mostrar las <b>${LIST.weak.length} menciones débiles</b> apartadas — sólo aparecen en el cuerpo</div>` : '';
 
@@ -3848,7 +3883,7 @@ function renderList(items, q) {
   while (LIST.sel >= LIST.shown) LIST.shown += PAGE;
   const root = document.getElementById('app-root');
   root.innerHTML = items.slice(0, LIST.shown).map((n, i) => fichaRow(n, i, LIST.q, i === LIST.sel)).join('')
-    + moreHtml() + tailHtml();
+    + moreHtml() + tailHtml() + askRowHtml();
   maybeGrow();
   renderPreview();
 }
@@ -3861,7 +3896,11 @@ function growList() {
   const more = document.getElementById('more'); if (!more) return;
   more.insertAdjacentHTML('beforebegin',
     LIST.items.slice(from, LIST.shown).map((n, i) => fichaRow(n, from + i, LIST.q, from + i === LIST.sel)).join(''));
-  if (LIST.shown >= LIST.items.length) { more.remove(); document.getElementById('app-root').insertAdjacentHTML('beforeend', tailHtml()); }
+  if (LIST.shown >= LIST.items.length) {
+    more.remove();
+    const pie = document.getElementById('ask-esc'); if (pie) pie.remove();   // el pie siempre al final
+    document.getElementById('app-root').insertAdjacentHTML('beforeend', tailHtml() + askRowHtml());
+  }
   else more.querySelector('b').textContent = fmtNum(LIST.items.length - LIST.shown);
 }
 /* Un oyente de scroll, no un IntersectionObserver: el observador no entrega
@@ -3903,6 +3942,7 @@ document.getElementById('app-root').addEventListener('click', e => {
   }
   const drw = e.target.closest('.row[data-drawer]');
   if (drw) { view = { mode: 'list', drawer: drw.dataset.drawer, slug: null, q: '' }; renderAll(); return; }
+  if (e.target.closest('#ask-esc')) { escalarAConsulta(); return; }
   if (e.target.closest('#tail')) { LIST.showWeak = true; renderAll(); return; }
   /* en la mesa y en la sala, tocar una fila la ELIGE: el folio se abre con ↵
      o con el botón del panel. Abrirlo al primer clic sacaba de la cola en
@@ -4889,6 +4929,13 @@ document.addEventListener('keydown', e => {
      lo que espera cualquiera que esté escribiendo) y ↑ ↓ son de la LISTA,
      como en cualquier buscador con resultados debajo. `↵` abre el elegido
      sin salir de la caja. Lo demás sigue siendo escribir. */
+  /* ⌘↵ y ⇧↵ mandan lo escrito a la consulta; ↵ a secas abre el primer
+     resultado. Un dedo de diferencia entre lo gratis y lo que cuesta — y va
+     ANTES del bloque de abajo, que descarta ⌘ y ctrl por diseño. */
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || e.shiftKey)
+      && document.activeElement === searchInput && !busy && !askAbierta) {
+    e.preventDefault(); escalarAConsulta(); return;
+  }
   if (typing && document.activeElement === searchInput && !busy && !askAbierta
       && !e.metaKey && !e.ctrlKey && !e.altKey) {
     if (e.key === 'ArrowDown') { e.preventDefault(); if (listLive()) listMove(1); return; }
