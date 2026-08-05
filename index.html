@@ -1491,10 +1491,10 @@ function losPair() {
     .finally(() => clearTimeout(timer));
   return losTokenPromise;
 }
-function losModelAlias(id) {   // the CLI's --model takes a short alias, not the API's full model id
-  const s = (id || '').toLowerCase();
-  return s.includes('opus') ? 'opus' : s.includes('haiku') ? 'haiku' : 'sonnet';
-}
+/* Deliberately NO alias mapping: a bare alias resolves to whatever the CLI currently calls 'sonnet',
+   so the model swaps with no diff and no failing test — and the ficha-heavy consulta desk is exactly
+   where a silent tier change would show up as worse answers, not as an error. The CLI takes a full
+   model id. Legacy stored ids are normalized once in migrate(), not per call. */
 function losFlatten(messages) {   // the CLI takes ONE prompt → a multi-turn thread renders as a transcript
   if (messages.length === 1) return messages[0].content;
   return messages.map(m => (m.role === 'user' ? 'Leandro' : 'Claude') + ': ' + m.content).join('\n\n');
@@ -1509,7 +1509,7 @@ async function callClaudeSub({ system, messages, model, maxTokens, onDelta, sign
   try {
     res = await fetch(LOS_HELPER_URL + '/claude', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LOS-Token': tok || '' },
-      body: JSON.stringify({ system: system || '', prompt: losFlatten(messages), model: losModelAlias(model), max_tokens: maxTokens }),
+      body: JSON.stringify({ system: system || '', prompt: losFlatten(messages), model: model || '', max_tokens: maxTokens }),
       signal: ac.signal,
     });
   } finally { clearTimeout(timer); }
