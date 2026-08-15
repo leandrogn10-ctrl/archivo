@@ -1308,6 +1308,12 @@ function openSettings() {
   document.getElementById('corpus-repo').value = state.corpus.repo;
   document.getElementById('corpus-branch').value = state.corpus.branch;
   renderClaudeStatus(); renderSyncStatus(); renderCorpusStatus();
+  // La durabilidad se sondeaba UNA VEZ, en el arranque, y el renglón se quedaba con esa foto.
+  // El 15-ago eso mintió por los pelos: Chrome concedió el permiso a las 13:59:41, cinco
+  // segundos DESPUÉS de que el panel dibujara «DESECHABLE», y el panel siguió diciéndolo hasta
+  // la siguiente recarga — un readout que envejece en silencio, justo lo que vino a evitar.
+  // Abrir settings es el momento en que a alguien le importa: se vuelve a preguntar aquí.
+  probeStorageDurability();
   settingsModal.showModal();
 }
 document.getElementById('settings-btn').addEventListener('click', openSettings);

@@ -26,7 +26,13 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   `durable_storage` seguía nombrando sólo a chatgpt.com. La hipótesis (no confirmada en fuentes
   de Chromium) es que la heurística del marcador sólo aplica a perfiles con poquísimos
   marcadores; éste tiene 72. Engagement iba en 43.8 con tope de ~5 puntos/día y el umbral no
-  está documentado, así que **instalar es la única palanca con mecanismo conocido**. Never restore the old
+  está documentado. **INSTALAR SÍ FUNCIONÓ: `durable_storage` concedió el origen a las 13:59:41
+  del 15-ago, minutos después de instalarla.** No la desinstales — es la única palanca que
+  resultó, y el diálogo de desinstalar trae una casilla «borrar datos» que se llevaría la caché
+  entera. Instalada no te quita la pestaña normal: la URL se sigue abriendo como siempre.
+  El sondeo se repite al ABRIR settings, no sólo en el arranque: la concesión llegó 5 segundos
+  después de que el panel pintara «DESECHABLE» y el renglón se quedó mintiendo hasta la
+  siguiente recarga — un readout de una sola foto envejece en silencio. Never restore the old
   `.catch(() => {})` form: it threw the answer away, so refused and granted looked identical
   from inside the app for 12 days.
 - **The icons are 192 + 512 because Chrome won't offer «install» below that.** The escudo used to
@@ -34,6 +40,9 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   and closed off one of those heuristics. `pintarEscudo(familia, lado)` still DESIGNS in a
   180 space and scales; `repintar()` rebuilds favicon + apple-touch + the whole manifest, so the
   installed icon is the Fraunces one and not the fallback serif. Don't drop a size from `ICONOS`.
+  **El manifiesto `blob:` generado en runtime SÍ le sirve a Chrome para instalar** (probado el
+  15-ago: instaló). No hace falta migrar a un `manifest.webmanifest` estático con ficheros de
+  icono — era la sospecha obvia cuando no aparecía «instalar», y era falsa: faltaban las medidas.
 - This app **reads** — with ONE exception: **veto-pass micro-writes** (`setSensitivity`-style
   human verdicts: single frontmatter fields, contents-API PUT, sha-guarded, commit message
   `veto: …`). The app never generates or edits note *content*; that's the sweep's job or git.
