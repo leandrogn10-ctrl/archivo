@@ -41,10 +41,19 @@ window.APP = {
   const favicon = document.createElement('link');
   favicon.rel = 'icon'; favicon.type = 'image/png';
   document.head.appendChild(favicon);
-  function pintarEscudo(familia) {
+  /* Chrome NO ofrece «instalar» sin un icono de 192 y otro de 512 (criterio documentado de
+     installability). El escudo se pintaba sólo a 180 — la medida de apple-touch-icon — así que
+     la app llevaba todo este tiempo siendo silenciosamente NO instalable, y instalar es una de
+     las tres heurísticas con las que Chrome concede almacenamiento durable (las otras: tenerla
+     en marcadores, y el engagement). Como el escudo es canvas, cualquier medida sale gratis:
+     se sigue DISEÑANDO en el espacio de 180 y se escala al pintar. Ver probeStorageDurability. */
+  const ATI = 180, ICONOS = [192, 512];
+  function pintarEscudo(familia, lado) {
+    lado = lado || ATI;
     const c = document.createElement('canvas');
-    c.width = 180; c.height = 180;
+    c.width = c.height = lado;
     const ctx = c.getContext('2d');
+    ctx.scale(lado / ATI, lado / ATI);   // el escudo se diseñó en 180; lo demás es escala
     // el cuarto, con la lámpara cayendo desde arriba
     const g = ctx.createLinearGradient(0, 0, 0, 180);
     g.addColorStop(0, '#2b2039'); g.addColorStop(1, APP.iconBg);
@@ -57,33 +66,41 @@ window.APP = {
     // el sello: la única voz alta, y va debajo como el filete de la ficha
     ctx.fillStyle = APP.iconRule;
     ctx.fillRect(46, 146, 88, 9);
-    const uri = c.toDataURL('image/png');
+    return c.toDataURL('image/png');
+  }
+  /* un repintado = el favicon, el apple-touch y el manifiesto entero, para que el icono
+     INSTALADO también sea el de Fraunces y no se quede con el de reserva */
+  let mlink = null, manifestUrl = null;
+  function repintar(familia) {
+    const uri = pintarEscudo(familia, ATI);
     favicon.href = uri;
     if (ati) ati.href = uri;
-    return uri;
+    const manifest = {
+      name: APP.name, short_name: APP.shortName,
+      description: APP.description,
+      start_url: window.location.pathname,
+      display: 'standalone',
+      background_color: APP.iconBg, theme_color: APP.iconBg,
+      orientation: 'portrait',
+      icons: ICONOS.map(lado => ({
+        src: pintarEscudo(familia, lado), sizes: `${lado}x${lado}`, type: 'image/png', purpose: 'any'
+      })),
+    };
+    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+    if (!mlink) { mlink = document.createElement('link'); mlink.rel = 'manifest'; document.head.appendChild(mlink); }
+    const prev = manifestUrl;
+    manifestUrl = URL.createObjectURL(blob);
+    mlink.href = manifestUrl;
+    if (prev) URL.revokeObjectURL(prev);   // el repintado no deja el blob viejo colgando
   }
   /* Se pinta ya con una serif que SIEMPRE está, para que nunca falte icono, y
      se vuelve a pintar con Fraunces en cuanto llega: el canvas no espera a
      las webfonts y pedirla antes de tiempo cae en la de sistema sin avisar. */
-  const pngUri = pintarEscudo('Georgia, "Times New Roman", serif');
+  repintar('Georgia, "Times New Roman", serif');
   if (document.fonts && document.fonts.ready) {
     document.fonts.load('italic 700 132px Fraunces')
-      .then(() => pintarEscudo('Fraunces, Georgia, serif')).catch(() => {});
+      .then(() => repintar('Fraunces, Georgia, serif')).catch(() => {});
   }
-  const manifest = {
-    name: APP.name, short_name: APP.shortName,
-    description: APP.description,
-    start_url: window.location.pathname,
-    display: 'standalone',
-    background_color: APP.iconBg, theme_color: APP.iconBg,
-    orientation: 'portrait',
-    icons: [{ src: pngUri, sizes: '180x180', type: 'image/png', purpose: 'any' }]
-  };
-  const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-  const mlink = document.createElement('link');
-  mlink.rel = 'manifest';
-  mlink.href = URL.createObjectURL(blob);
-  document.head.appendChild(mlink);
 })();
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -673,9 +690,11 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .toggle-row input[type="checkbox"]:checked::before { left: 15px; background: var(--c-sage-fg); }
 
 
-.sync-status { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-faint); margin-top: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+.sync-status { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; color: var(--ink-faint); margin-top: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
 .sync-status.ok { color: var(--c-sage-fg); }
 .sync-status.err { color: var(--danger); }
+/* la caché existe pero Chrome puede tirarla — no es un fallo, es una advertencia: latón, no sello */
+.sync-status.warn { color: var(--brass-2); }
 
 /* ── ask-the-archive: the consulta desk (a real conversation, not a one-shot panel) ── */
 .ask-btn { color: var(--c-dusty-fg); }
@@ -1335,15 +1354,34 @@ function renderClaudeStatus() {
   el.textContent = `enabled · ${state.settings.claude.model.split('-')[1]} · ${plan}${via}`;
   el.className = 'sync-status ok';
 }
+/* la durabilidad de la caché, dicha en voz alta — una caché que puede desaparecer lo advierte */
+function durabilityClause() {
+  if (storagePersisted === null) return null;
+  const mb = storageEstimate?.usage != null ? ` (${(storageEstimate.usage / 1048576).toFixed(1)} MB)` : '';
+  if (storagePersisted === 'unsupported') return { text: 'durabilidad: el navegador no la reporta', warn: true };
+  if (storagePersisted === true) return { text: `caché durable${mb}`, warn: false };
+  // se pide INSTALAR y no marcador: el marcador es heurística documentada de Chrome pero se
+  // probó el 15-ago en este perfil (72 marcadores) y no concedió nada — ver CLAUDE.md
+  return { text: `caché DESECHABLE${mb} — Chrome puede tirarla; instálala como app para fijarla`, warn: true };
+}
 function renderCorpusStatus() {
   const el = document.getElementById('corpus-status');
-  if (!corpus) { el.textContent = 'never pulled — ⟳ in the topbar'; el.className = 'sync-status'; return; }
-  if (corpusCacheError) {
-    el.textContent = `${corpus.notes.length} fichas (in memory only) · cache write failed: ${String(corpusCacheError.message || corpusCacheError).slice(0, 100)}`;
-    el.className = 'sync-status err'; return;
+  const dur = durabilityClause();
+  const parts = [], cls = ['sync-status'];
+  if (!corpus) { parts.push('never pulled — ⟳ in the topbar'); }
+  else if (corpusCacheError) {
+    parts.push(`${corpus.notes.length} fichas (in memory only) · cache write failed: ${String(corpusCacheError.message || corpusCacheError).slice(0, 100)}`);
+    cls.push('err');
+  } else {
+    // la ruta que SIRVIÓ, no la que se configuró: un pull por REST cuesta ~200x más cuota que
+    // uno por GraphQL, y sin este renglón los dos se leen igual de bien
+    const via = corpus.route === 'rest' ? ' · vía REST (respaldo, 1 petición por ficha)' : corpus.route === 'graphql' ? ' · vía GraphQL' : '';
+    parts.push(`${corpus.notes.length} fichas · pulled ${new Date(corpus.fetchedAt).toLocaleString()}${via}`);
+    cls.push(corpus.route === 'rest' ? 'warn' : 'ok');
   }
-  el.textContent = `${corpus.notes.length} fichas · pulled ${new Date(corpus.fetchedAt).toLocaleString()}`;
-  el.className = 'sync-status ok';
+  if (dur) { parts.push('·'); parts.push(dur.text); if (dur.warn && !cls.includes('err')) { const i = cls.indexOf('ok'); if (i > -1) cls.splice(i, 1); if (!cls.includes('warn')) cls.push('warn'); } }
+  el.textContent = parts.join(' ');
+  el.className = cls.join(' ');
 }
 
 /* ── gist sync engine (shell verbatim) ── */
@@ -2198,6 +2236,72 @@ async function ghGet(path) {
   return res.json();
 }
 
+/* ── el acarreo a granel: GraphQL ──
+   A cold pull used to cost ONE contents-API call per ficha — 3,179 requests against the
+   5,000/hr core bucket, so a single eviction could very nearly spend the hour, and two could
+   lock the bodega shut. GraphQL fetches a whole batch of blobs in one request whose
+   rate-limit cost is 1 point, on the SEPARATE 5,000-point GraphQL bucket. Measured on this
+   corpus: 50 blobs → 63KB/2.0s, 200 → 387KB/4.6s, 400 → 1.2MB/9.9s, every one of them cost 1.
+   So the ceiling is GitHub's ~10s query timeout, not quota; 150 keeps a wide margin and turns
+   the cold pull into ~22 requests / ~22 points.
+
+   NOT the tarball endpoint, which looks like the obvious one-request answer and isn't:
+   /repos/:r/tarball 302s to codeload.github.com, which answers
+   `access-control-allow-origin: https://render.githubusercontent.com` — a browser fetch from
+   this origin is blocked at the redirect. (It would also ship textos/, 61MB of the repo's
+   150MB, that the ficha filter deliberately excludes.) */
+const GQL_BATCH = 150;
+
+async function ghGraphQL(query) {
+  const pat = state.settings.sync.githubPat;
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${pat}`, 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(`graphql ${res.status} — ${t.slice(0, 100)}`); }
+  const j = await res.json();
+  // GraphQL reports failure INSIDE a 200 — checking res.ok alone reads an error as success
+  if (j.errors?.length) throw new Error(`graphql: ${j.errors.map(e => e.message).join('; ').slice(0, 140)}`);
+  return j.data;
+}
+
+/* One request for the whole batch. Returns only the fichas that came back whole: `text` is
+   null on a blob GitHub deems binary and short on one it truncates, and either would land a
+   ficha silently empty — worse than not landing it, because an empty ficha caches with a
+   FRESH sha and never gets retried. Whatever doesn't come back stays the caller's problem. */
+async function fetchNotesBatch(repo, branch, files) {
+  const [owner, name] = repo.split('/');
+  const fields = files.map((f, i) =>
+    `f${i}: object(expression: ${JSON.stringify(`${branch}:${f.path}`)}) { ... on Blob { text isTruncated isBinary } }`
+  ).join(' ');
+  const data = await ghGraphQL(`query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${fields} } }`);
+  if (!data?.repository) throw new Error(`el token no ve ${repo} por GraphQL`);
+  const out = [];
+  files.forEach((f, i) => {
+    const o = data.repository[`f${i}`];
+    if (!o || o.isBinary || o.isTruncated || typeof o.text !== 'string') return;
+    const n = parseNote(f.path, o.text);
+    n.sha = f.sha;
+    out.push(n);
+  });
+  return out;
+}
+
+/* el respaldo: la ruta vieja, una ficha por petición. Sólo se usa si GraphQL rechaza el token
+   (un PAT fine-grained sin `metadata: read` lo hace) — y cuando se usa, SE DICE: `corpus.route`
+   lo guarda y el renglón de settings lo imprime. Un respaldo silencioso aquí costaría la cuota
+   entera de la hora sin que nada se viera distinto. */
+async function fetchNotesBatchREST(repo, branch, files) {
+  return Promise.all(files.map(async f => {
+    const j = await ghGet(`/repos/${repo}/contents/${f.path}?ref=${encodeURIComponent(branch)}`);
+    const n = parseNote(f.path, b64ToUtf8(j.content));
+    n.sha = f.sha;
+    return n;
+  }));
+}
+
 /* frontmatter: the subset the corpus README defines (key: value, tags: [a, b]) */
 function parseFrontmatter(raw) {
   const fm = {}; let body = raw;
@@ -2248,18 +2352,33 @@ async function pullCorpus() {
       if (old && old.sha === f.sha) notes.push(old);
       else toFetch.push(f);
     }
-    let pullError = null, fetched = 0;
-    for (let i = 0; i < toFetch.length; i += 12) {
-      btn.textContent = `${Math.min(i + 12, toFetch.length)}/${toFetch.length}`;
-      const batch = toFetch.slice(i, i + 12);
+    let pullError = null, fetched = 0, unreadable = 0, route = 'graphql';
+    let i = 0;
+    while (i < toFetch.length) {
+      const size = route === 'graphql' ? GQL_BATCH : 12;
+      const batch = toFetch.slice(i, i + size);
+      btn.textContent = `${Math.min(i + batch.length, toFetch.length)}/${toFetch.length}`;
       try {
-        const got = await Promise.all(batch.map(async f => {
-          const j = await ghGet(`/repos/${repo}/contents/${f.path}?ref=${encodeURIComponent(branch)}`);
-          const n = parseNote(f.path, b64ToUtf8(j.content));
-          n.sha = f.sha;
-          return n;
-        }));
+        let got;
+        try {
+          got = route === 'graphql' ? await fetchNotesBatch(repo, branch, batch) : await fetchNotesBatchREST(repo, branch, batch);
+        } catch (e) {
+          // GraphQL refusing the token is not a dead pull, it's the wrong door: drop to REST
+          // ONCE, on the very first batch, and leave `route` saying which one served. Any
+          // later failure is a real failure and falls through to the resume path below.
+          if (route !== 'graphql' || i > 0) throw e;
+          console.warn('graphql pull rejected, falling back to REST', e);
+          route = 'rest';
+          continue;                     // mismo i, lote más chico, ruta lenta
+        }
         notes.push(...got); fetched += got.length;
+        // a blob that came back binary/truncated keeps its stale cached copy AND its old sha,
+        // so the next ⟳ retries it instead of caching a hole under a fresh sha
+        if (got.length < batch.length) {
+          const landed = new Set(got.map(n => n.path));
+          for (const f of batch) if (!landed.has(f.path)) { unreadable++; const old = prev.get(f.path); if (old) notes.push(old); }
+        }
+        i += batch.length;
       } catch (e) {
         // a dead batch (rate limit, mid-air drop) must not cost what's already fetched:
         // keep the stale cached copy for the remainder — old sha → next pull resumes there
@@ -2274,8 +2393,9 @@ async function pullCorpus() {
       const t = await ghGet(`/repos/${repo}/contents/turno.json?ref=${encodeURIComponent(branch)}`);
       turno = JSON.parse(b64ToUtf8(t.content));
     } catch (e) {}
-    // fetchedAt 0 on a partial pull → the next open auto-pulls the remainder immediately
-    corpus = { fetchedAt: pullError ? 0 : Date.now(), notes, turno };
+    // fetchedAt 0 on a partial pull → the next open auto-pulls the remainder immediately.
+    // `route` rides along so settings can print which door actually served, not which was tried.
+    corpus = { fetchedAt: pullError ? 0 : Date.now(), notes, turno, route };
     kinReset();   // los memos de la unión no sobreviven a un barrido
     warmSearchIndex();
     saveCorpusCache();
@@ -2285,8 +2405,12 @@ async function pullCorpus() {
     // and got fully exhausted Jul 10 by pulls alone cascading into state-gist writes
     state.corpus.lastPulledAt = Date.now(); save({ push: false });
     renderAll();
-    if (pullError) toast(`bodega parcial: ${fetched} traídas, ${toFetch.length - fetched} pendientes (${String(pullError.message || pullError).slice(0, 80)}) — ⟳ reanuda donde quedó.`, true);
-    else toast(`la bodega: ${notes.length} fichas (${toFetch.length} traídas, ${notes.length - toFetch.length} de caché).`);
+    // `fetched`, no `toFetch.length`: desde que un blob puede volver ilegible y saltarse, "lo
+    // pedido" y "lo traído" dejaron de ser el mismo número, y de caché es el resto real
+    const ilegibles = unreadable ? `, ${unreadable} ilegibles — ⟳ reintenta` : '';
+    const via = route === 'rest' ? ' vía REST' : '';
+    if (pullError) toast(`bodega parcial: ${fetched} traídas${via}, ${toFetch.length - fetched - unreadable} pendientes (${String(pullError.message || pullError).slice(0, 80)}) — ⟳ reanuda donde quedó.`, true);
+    else toast(`la bodega: ${notes.length} fichas (${fetched} traídas${via}, ${notes.length - fetched} de caché)${ilegibles}.`);
   } catch (e) {
     console.error('corpus pull', e);
     toast('pull de la bodega falló: ' + e.message, true);
@@ -2342,6 +2466,33 @@ async function ghWrite(method, path, bodyObj) {
   return res;
 }
 let corpusCacheError = null;   // last IDB write failure, surfaced in settings — see renderCorpusStatus
+
+/* ── ¿la caché es DURABLE o desechable? ──
+   The old boot line was `navigator.storage.persist().catch(() => {})` — it asked for durability
+   and threw the answer on the floor. persist() RETURNS A BOOLEAN, and Chrome only grants it on
+   heuristics (installed app / bookmarked / high site-engagement); a plain tab just gets `false`.
+   Refused and granted therefore looked byte-identical from inside the app, and the mitigation
+   read as shipped for 12 days while the storage stayed best-effort. It was refused: on Aug 15
+   Chrome evicted the whole IndexedDB for this origin — the leveldb came back virgin
+   (MANIFEST-000001, first generation) — and boot found no cache, so every one of the 3,179
+   fichas went into toFetch. That cold repull is what "why is it reloading?" looks like.
+   So: probe it, keep the verdict, and SHOW it. A cache that can vanish must say so out loud. */
+let storagePersisted = null;    // null = sin sondear · true · false · 'unsupported'
+let storageEstimate = null;
+async function probeStorageDurability() {
+  try {
+    if (!navigator.storage?.persist) { storagePersisted = 'unsupported'; }
+    else {
+      // persisted() first: persist() on an already-durable origin is a no-op, but asking the
+      // cheap question first keeps the grant prompt (other browsers) off every single boot
+      storagePersisted = await navigator.storage.persisted();
+      if (!storagePersisted) storagePersisted = await navigator.storage.persist();
+    }
+    if (navigator.storage?.estimate) storageEstimate = await navigator.storage.estimate();
+  } catch (e) { storagePersisted = 'unsupported'; console.warn('storage durability', e); }
+  if (document.getElementById('corpus-status')) renderCorpusStatus();
+}
+
 function saveCorpusCache() {
   idbCorpusSet(corpus).then(() => { corpusCacheError = null; }).catch(e => {
     corpusCacheError = e; console.warn('corpus cache write', e);
@@ -5383,12 +5534,9 @@ function wireOpeners(root) {
 
 const CORPUS_STALE_MS = 30 * 60 * 1000;   // auto-refresh the bodega when the cache is older than 30 min
 async function initArchivo() {
-  // Ask Chrome to exempt this origin's storage from best-effort eviction. Without this the
-  // corpus cache is the first thing thrown out under disk pressure — it silently vanished
-  // Aug 3 when the Mac hit ~1GB free, forcing a ~2900-request cold repull (2919 fichas,
-  // one contents-API call each) against a 5000/hr GitHub quota. persist() is a no-op if
-  // already granted; installed PWAs like this one are usually auto-granted, no prompt.
-  if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+  // Ask Chrome to exempt this origin's storage from best-effort eviction, and READ THE ANSWER.
+  // Fire-and-forget: it re-renders the status line when the verdict lands, off the boot path.
+  probeStorageDurability();
   corpus = await loadCorpusCache();              // IDB answers in ms; boot paints, this re-paints
   if (corpus && !corpus.notes) corpus = null;   // stale/foreign cache shape → refetch
   if (corpus) { renderAll(); warmSearchIndex(); }   // el índice se calienta en los huecos, no en la primera búsqueda

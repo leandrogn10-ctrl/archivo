@@ -14,6 +14,26 @@ The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied 
   `archivo.corpus.v1`), never inside `state`** — note content must never reach the app-state
   gist. Don't "simplify" this. (Was localStorage until Jul 2026: the corpus outgrew the ~5MB
   quota, every cache write threw, and each open re-pulled ~1k fichas off a fossilized cache.)
+- **That cache is best-effort until Chrome says otherwise, and Chrome says no to a plain tab.**
+  `navigator.storage.persist()` returns a BOOLEAN and grants durability on heuristics (installed
+  app / bookmarked / high engagement). Aug 15 it was refused, Chrome evicted the entire
+  IndexedDB, and the leveldb came back virgin (MANIFEST-000001) — 3,179 fichas cold-pulled with
+  nothing on screen to explain why. `probeStorageDurability()` now reads the verdict and settings
+  prints it — the readout only says whether the grant landed, it can't cause it. Chrome's three
+  documented heuristics are engagement, installed, and bookmarked. **El marcador NO sirve en este
+  perfil, probado el 15-ago:** marcador puesto 13:43:56 → la app arrancó 13:44:04 (el IDB se
+  tocó, o sea `persist()` volvió a preguntar) → Preferences se escribió 13:44:29, 33s DESPUÉS, y
+  `durable_storage` seguía nombrando sólo a chatgpt.com. La hipótesis (no confirmada en fuentes
+  de Chromium) es que la heurística del marcador sólo aplica a perfiles con poquísimos
+  marcadores; éste tiene 72. Engagement iba en 43.8 con tope de ~5 puntos/día y el umbral no
+  está documentado, así que **instalar es la única palanca con mecanismo conocido**. Never restore the old
+  `.catch(() => {})` form: it threw the answer away, so refused and granted looked identical
+  from inside the app for 12 days.
+- **The icons are 192 + 512 because Chrome won't offer «install» below that.** The escudo used to
+  be painted only at 180 (apple-touch-icon's size), which quietly made the app non-installable
+  and closed off one of those heuristics. `pintarEscudo(familia, lado)` still DESIGNS in a
+  180 space and scales; `repintar()` rebuilds favicon + apple-touch + the whole manifest, so the
+  installed icon is the Fraunces one and not the fallback serif. Don't drop a size from `ICONOS`.
 - This app **reads** — with ONE exception: **veto-pass micro-writes** (`setSensitivity`-style
   human verdicts: single frontmatter fields, contents-API PUT, sha-guarded, commit message
   `veto: …`). The app never generates or edits note *content*; that's the sweep's job or git.
@@ -35,7 +55,14 @@ títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
 `v2-canto-fase1`. Si vuelven, que sea con datos inventados.
 
 ## Domain code map (all in index.html, below the shell plumbing)
-- `pullCorpus()` — tree API → contents API in batches of 6; README.md excluded
+- `pullCorpus()` — tree API for the file list + shas, then **GraphQL** blob batches of 150
+  (`fetchNotesBatch`); a batch costs **1 rate-limit point**, so a cold pull of ~3,180 fichas is
+  ~22 requests instead of ~3,180 contents-API calls. Batch size is bound by GitHub's ~10s query
+  timeout, not by quota (measured: 200 blobs 4.6s, 400 blobs 9.9s). `fetchNotesBatchREST` is the
+  fallback for a token GraphQL rejects — it fires once, on the first batch only, and the route
+  that actually SERVED is recorded in `corpus.route` and printed in settings. Not the tarball
+  endpoint: it 302s to codeload.github.com, whose CORS header names render.githubusercontent.com
+  only. Fichas live in a folder (`f.path.includes('/')`), `textos/` excluded
 - `parseFrontmatter/parseNote` — the README-defined YAML subset only (no nesting)
 - `mdRender/mdInline` — hand-rolled markdown; **escape HTML first**, then transform;
   `[[wikilinks]]` resolve against corpus slugs (filename sans .md, must stay unique)
