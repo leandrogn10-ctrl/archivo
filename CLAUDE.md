@@ -79,6 +79,20 @@ títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
   backlinks scan); `view` is the tiny router
 - Search: `/` focuses, title(10)>tags(5)>body(1) scoring — the F14 seed. `searchNotesScored`
   is the ranker; `searchNotes` is the names-only wrapper
+- **Teclado.** Three grammars, one law (`k` baja / `j` sube — inverted vs vim on purpose):
+  the list (j/k/↵/b), the mesa+sala (their six verdict letters), and **el folio**
+  (`folioScroll` + the `view.mode === 'note'` block): j/k/↑↓ step 96px, espacio/AvPág page,
+  `g`/`G` ends, `d` documento original, `t` texto completo, `n`/`p` the drawer's neighbours.
+  `,` opens settings from anywhere. The step **accumulates on `FOLIO.destino`, never on
+  `scrollTop`** — summing on the live position while the eased tween is still travelling
+  shortens every repeat and reads as "se traba al bajar rápido".
+  `hacerTabulables()` (called once from `renderAll`) stamps `tabindex` on the div-shaped
+  clickables inside `#app-root`; an `#app-root` keydown re-emits ↵/espacio as a **click**, so
+  keyboard and mouse share one path. Two traps worth keeping: **`el.tabIndex` reads 0 on an
+  `<a>` with no href even though it cannot take focus** (guard on the *attribute*, or you skip
+  every wikilink), and rows (`data-i`/`data-idx`/`tl-item`) are excluded on purpose — they're a
+  selection, not links. The folio's key bar hides under 760px **but not at width 0**: an
+  un-laid-out tab reports `innerWidth 0`, which satisfies `max-width:760px`
 - Consulta desk (`?` or ✦ preguntar): multi-turn streamed chat over the corpus. Retrieval is
   **budget-driven, never a fixed hit count** — every hit above 15% of the top score goes in
   until `ASK_CHAR_BUDGET` is spent; follow-ups append only fichas the thread hasn't seen.

@@ -954,6 +954,10 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 }
 .folio-plate .plate-item b { color: var(--ink-dim); font-weight: 600; }
 .folio-plate a { font-size: 10.5px; }
+/* la tecla dentro de la chapa: el `kbd` general está dimensionado para la barra
+   de abajo (24px de ancho mínimo) y aquí, a 10.5px, quedaba como un ladrillo */
+.folio-plate kbd { min-width: 0; padding: 1px 4px; border-radius: 3px; border-bottom-width: 1px;
+  font-size: 9.5px; letter-spacing: 0; margin: 0 2px; }
 .folio-body { font-family: var(--serif); font-size: 15.5px; line-height: 1.75; color: var(--ink); }
 .folio-body h1, .folio-body h2, .folio-body h3 { margin: 26px 0 10px; font-style: italic; line-height: 1.25; }
 .folio-body h1 { font-size: 26px; } .folio-body h2 { font-size: 21px; } .folio-body h3 { font-size: 17px; }
@@ -1294,7 +1298,11 @@ document.getElementById('prompt-ok').addEventListener('click', () => {
   promptModal.close();
 });
 
-function renderAll() { appRender(); }
+/* un solo sitio: `appRender` deja el panel central pintado —lista, folio, clase,
+   Hoy, hitos— y de ahí sale TODO lo pulsable de una pasada. Sembrar el
+   `tabindex` en cada rama de `renderView` sería seis copias de la misma regla,
+   y la séptima rama que alguien añada nacería sin teclado. */
+function renderAll() { appRender(); hacerTabulables(document.getElementById('app-root')); }
 
 /* ── settings sheet (shell + corpus fields) ── */
 const settingsModal = document.getElementById('settings-modal');
@@ -5058,6 +5066,104 @@ function listMove(d) {
   }
   renderPreview();
 }
+
+/* ── LA GRAMÁTICA DEL FOLIO ───────────────────────────────────────────
+   Leer una ficha larga era lo único que seguía exigiendo el ratón. El que
+   desborda es `#app-root`, y un <div> sin `tabindex` no toma foco: ↑↓,
+   espacio y AvPág no movían NADA dentro del folio — no es que fueran lentos,
+   es que no existían. Se recorre con las mismas letras que la lista (`k`
+   baja, `j` sube: la ley invertida de toda la app).
+
+   El paso se acumula sobre el DESTINO pendiente, no sobre `scrollTop`: con la
+   tecla repetida, sumar sobre la posición actual —que todavía va en camino—
+   da tramos cada vez más cortos, y el síntoma es «se traba al bajar rápido».
+   La aproximación exponencial (30 % del hueco por fotograma) aterriza en ~7
+   fotogramas: se siente instantánea de a una pulsación y fluida en ráfaga. */
+const FOLIO = { destino: 0, raf: 0 };
+const FOLIO_PASO = 96;      // ~3.5 renglones de 27px
+const folioScroller = () => document.getElementById('app-root');
+function folioScrollStop() { if (FOLIO.raf) cancelAnimationFrame(FOLIO.raf); FOLIO.raf = 0; }
+function folioScroll(px, absoluto) {
+  const el = folioScroller(); if (!el) return;
+  const max = Math.max(0, el.scrollHeight - el.clientHeight);
+  const base = FOLIO.raf ? FOLIO.destino : el.scrollTop;
+  FOLIO.destino = Math.max(0, Math.min(max, absoluto != null ? absoluto : base + px));
+  if (!FOLIO.raf) FOLIO.raf = requestAnimationFrame(folioTick);
+}
+function folioTick() {
+  const el = folioScroller();
+  if (!el || view.mode !== 'note') { FOLIO.raf = 0; return; }
+  const d = FOLIO.destino - el.scrollTop;
+  if (Math.abs(d) < 0.6) { el.scrollTop = FOLIO.destino; FOLIO.raf = 0; return; }
+  el.scrollTop += d * 0.3;
+  FOLIO.raf = requestAnimationFrame(folioTick);
+}
+// la rueda manda: si la mano toca el ratón a mitad de un tramo, el tramo muere
+document.getElementById('app-root').addEventListener('wheel', folioScrollStop, { passive: true });
+
+/* `d` = EL DOCUMENTO ORIGINAL, y `source` no siempre es un enlace: de las
+   2 886 fichas que lo llevan, ~143 dicen `descarga:Ruta/al/fichero`, que es un
+   fichero en el disco y no una URL. Se dice cuál de los dos hay. Abrir «lo
+   otro» en su lugar (el texto completo) sería el fallback silencioso de
+   siempre: dos salidas distintas que desde fuera se ven iguales. */
+function abrirEnPestaña(url) { const w = window.open(url, '_blank'); if (w) w.opener = null; }
+function abrirDocumento(n) {
+  const src = n.fm.source ? String(n.fm.source) : '';
+  if (/^https?:/.test(src)) { abrirEnPestaña(src); return; }
+  if (/^descarga:/i.test(src)) { toast(`el original es un fichero del disco: ${src.replace(/^descarga:/i, '')}`); return; }
+  if (src) { toast(`la fuente de esta ficha no es un enlace: «${src}»`); return; }
+  toast(n.fm.texto ? 'esta ficha no cita documento original — «t» abre el texto completo.'
+                   : 'esta ficha no cita ningún documento original.');
+}
+function abrirTexto(n) {
+  if (!n.fm.texto) { toast('esta ficha no guarda texto completo en la bodega.'); return; }
+  abrirEnPestaña(`https://github.com/${state.corpus.repo}/blob/${state.corpus.branch}/${n.fm.texto}`);
+}
+
+/* TODO LO QUE SE PUEDE PULSAR, SE PUEDE TABULAR. La cabecera ya eran <button>
+   de verdad (y el `:focus-visible` de arriba dibuja dónde está el foco), pero
+   dentro del panel central media docena de cosas se dibujan como <div> colgados
+   de un oyente delegado: azar, los cajones de Hoy, «menciones débiles»,
+   escalar a la consulta, las tarjetas de una clase, los wikilinks y el pie de
+   la unión. Se les pone `tabindex` y un ↵/espacio que REEMITE EL CLIC — así el
+   camino de teclado y el de ratón son el mismo código y no puede haber una
+   segunda copia de la navegación que se desfase de la primera.
+   Las FILAS quedan fuera a propósito —las del catálogo (`data-i`), las de la
+   línea de hitos (`tl-item`) y las de la mesa y la sala (`data-idx`)—: son una
+   SELECCIÓN, no una lista de enlaces, y ya se recorren con j/k más las letras
+   del veredicto. Meter 3 000 paradas del catálogo (o las 48 de la bandeja) en
+   el orden de tabulación sería accesible en el papel e inservible en la mano.
+   Y no hacen falta: la salida de una fila de la mesa —«abrir folio»— vive en
+   el panel derecho y ya es un <button> de verdad, igual que los seis
+   veredictos, que además tienen su letra. */
+function hacerTabulables(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-open], a.wiki, .tail, .row[data-drawer]').forEach(el => {
+    if (el.matches('.row[data-i], .row[data-idx], .tl-item')) return;
+    /* Se pregunta por el ATRIBUTO, no por `el.tabIndex`. Chrome devuelve 0 en la
+       PROPIEDAD de un <a> sin href —y ese <a> no toma foco: `.focus()` no hace
+       nada—, así que el guardia obvio («ya vale ≥0, déjalo») saltaba justo los
+       enlaces que más falta hacían: los wikilinks, quién-la-cita y el anterior/
+       siguiente de la unión, que se dibujan todos como anclas sin href.
+       Comprobado en Chrome 149: `document.createElement('a').tabIndex === 0`
+       y `document.activeElement === a` es false tras enfocarlo. */
+    if (el.hasAttribute('tabindex')) return;
+    if (el.matches('button, a[href], input, select, textarea')) return;   // ya tabula solo
+    el.tabIndex = 0;
+    if (!el.getAttribute('role')) el.setAttribute('role', el.dataset.open || el.classList.contains('wiki') ? 'link' : 'button');
+  });
+}
+/* Va en `#app-root` (no en `document`) para que corra ANTES que la gramática
+   global, que es de burbuja sobre el documento: sin esto, un ↵ sobre «ficha al
+   azar» abriría la fila seleccionada de la lista en vez de lo que tiene el foco. */
+document.getElementById('app-root').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target.closest?.('[tabindex="0"]');
+  if (!el) return;
+  e.preventDefault(); e.stopPropagation();
+  el.click();
+});
+
 document.addEventListener('keydown', e => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   const busy = settingsModal.open || promptModal.open;
@@ -5125,6 +5231,36 @@ document.addEventListener('keydown', e => {
     PANO.go(calle[next]);
     return;
   }
+  /* EL FOLIO. Seis teclas y ninguna nueva idea: `k`/`j` recorren igual que en
+     la lista, el espacio pagina, `g`/`G` van a los extremos, y `d`/`t` son las
+     dos puertas de salida de una ficha —el documento del que salió y su texto
+     completo—, que hasta ahora sólo se abrían con el ratón sobre el renglón
+     de la chapa. `n`/`p` saltan al vecino DEL MISMO CAJÓN, el mismo par que ya
+     dibuja el pie de la unión (`kinNeighbors`), no un orden inventado aquí.
+     El precio, dicho en voz alta y ya conocido: dentro del folio, una palabra
+     que empiece por d, t, g, n, p, j o k pierde su inicial al escribir para
+     buscar — `/` sigue siendo el escape. */
+  if (view.mode === 'note') {
+    const alto = (folioScroller()?.clientHeight || 600) * 0.86;
+    const paso = { k: FOLIO_PASO, ArrowDown: FOLIO_PASO, j: -FOLIO_PASO, ArrowUp: -FOLIO_PASO,
+                   PageDown: alto, PageUp: -alto, ' ': e.shiftKey ? -alto : alto }[e.key];
+    if (paso != null) { e.preventDefault(); folioScroll(paso); return; }
+    if (e.key === 'g' || e.key === 'Home') { e.preventDefault(); folioScroll(0, 0); return; }
+    if (e.key === 'G' || e.key === 'End')  { e.preventDefault(); folioScroll(0, Infinity); return; }
+    const n = noteBySlug(view.slug);
+    if (n && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); abrirDocumento(n); return; }
+    if (n && (e.key === 't' || e.key === 'T')) { e.preventDefault(); abrirTexto(n); return; }
+    if (n && (e.key === 'n' || e.key === 'p')) {
+      e.preventDefault();
+      const vecino = e.key === 'n' ? kinNeighbors(n).next : kinNeighbors(n).prev;
+      if (vecino) openSlug(vecino.slug);
+      else toast(e.key === 'n' ? 'es la última ficha del cajón.' : 'es la primera ficha del cajón.');
+      return;
+    }
+  }
+  /* la coma abre opciones desde donde sea: es la única puerta que estaba a
+     cinco tabulaciones de distancia, y ninguna búsqueda empieza por coma. */
+  if (e.key === ',') { e.preventDefault(); openSettings(); return; }
   if (!listLive()) { escribirEsBuscar(e); return; }   // sin lista viva, escribir sigue buscando
   if (e.key === 'k' || e.key === 'ArrowDown') { e.preventDefault(); listMove(1); return; }
   if (e.key === 'j' || e.key === 'ArrowUp')   { e.preventDefault(); listMove(-1); return; }
@@ -5345,6 +5481,7 @@ function renderView() {
   LIST.items = []; LIST.shown = PAGE;
   document.getElementById('side').innerHTML = '';
   document.getElementById('pkeys').innerHTML = '';
+  folioScrollStop();   // un tramo pendiente del folio anterior pelearía con este reposicionado
   root.scrollTop = 0;
 
   if (!corpus) {
@@ -5371,8 +5508,8 @@ function renderView() {
         ${n.fm.provenance ? `<span class="plate-item">pluma <b>${escapeHtml(String(n.fm.provenance))}</b></span>` : ''}
         ${n.fm.verified === true ? `<span class="plate-item" style="color:var(--c-sage-fg)">✓ verificado</span>` : ''}
         <button class="plate-sens" id="sens-toggle" title="click para cambiar la sensibilidad (escribe al repo)">${n.fm.sensitivity === 'private' ? '🔒 privado' : '🔓 normal'}</button>
-        ${n.fm.source && /^https?:/.test(String(n.fm.source)) ? `<a href="${escapeHtml(String(n.fm.source))}" target="_blank" rel="noopener">documento original ↗</a>` : ''}
-        ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo ↗</a>` : ''}
+        ${n.fm.source && /^https?:/.test(String(n.fm.source)) ? `<a href="${escapeHtml(String(n.fm.source))}" target="_blank" rel="noopener">documento original <kbd>d</kbd> ↗</a>` : ''}
+        ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo <kbd>t</kbd> ↗</a>` : ''}
       </div>
       <div class="folio-body">${mdRender(n.body)}</div>
       ${n.folder === 'personas' ? dossierHtml(n) : ''}
@@ -5392,6 +5529,27 @@ function renderView() {
       catch (e) { console.error('sensitivity', e); toast('no se pudo escribir: ' + e.message, true); sensBtn.classList.remove('busy'); }
     });
     wireOpeners(root);
+    /* La barra ES la documentación, así que promete POR FICHA: `d` sólo
+       aparece si esta ficha cita un enlace de verdad, y `t` sólo si guarda
+       texto. Una barra fija anunciaría dos puertas que en la mitad del archivo
+       no llevan a ningún sitio. */
+    const nb = kinNeighbors(n);
+    /* Y en el móvil no se promete NADA: sin teclado la barra es puro anuncio,
+       y esta —con siete entradas— se comía 137px de 812 (el 17 % de la
+       pantalla) delante del texto que uno vino a leer.
+       Se mide el ancho a mano en vez de `matchMedia` por el CERO: una pestaña
+       que aún no ha maquetado (abierta en segundo plano, prerender) declara
+       `innerWidth 0`, que satisface «max-width:760px» y esconde la barra en un
+       escritorio hasta la siguiente pintada. Cero no es un teléfono. */
+    const ancho = window.innerWidth;
+    if (ancho > 0 && ancho <= 760) return;
+    document.getElementById('pkeys').innerHTML = [
+      '<kbd>k</kbd> baja', '<kbd>j</kbd> sube', '<kbd>espacio</kbd> página', '<kbd>g</kbd>/<kbd>G</kbd> extremos',
+      ...(/^https?:/.test(String(n.fm.source || '')) ? ['<kbd>d</kbd> documento original'] : []),
+      ...(n.fm.texto ? ['<kbd>t</kbd> texto completo'] : []),
+      ...((nb.prev || nb.next) ? ['<kbd>n</kbd>/<kbd>p</kbd> ficha del cajón'] : []),
+      '<kbd>esc</kbd> al catálogo',
+    ].join(' · ');
     return;
   }
 
