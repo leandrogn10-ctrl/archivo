@@ -5209,7 +5209,11 @@ document.addEventListener('keydown', e => {
       return;
     }
   }
-  if (busy || typing || askAbierta) return;
+  /* la consulta ABIERTA no congela el teclado: `typing` ya protege su caja de
+     texto, y en escritorio el folio convive con el chat (askOpenNote) — el
+     precio es que una letra suelta con el chat a la vista cae en el folio o
+     en el buscador, no en el chat. */
+  if (busy || typing) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'b' || e.key === 'B') { e.preventDefault(); document.getElementById('tray').click(); return; }
   /* ← → RECORREN LA CALLE. El panorama es el raíl de cajones y su promesa
