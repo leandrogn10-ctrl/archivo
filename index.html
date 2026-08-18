@@ -308,6 +308,15 @@ kbd{
 .search kbd{flex:none}
 .tstate{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
 .dot{width:6px;height:6px;border-radius:6px;background:var(--live);flex:none}
+/* Estados del pip de sync (auditoría P1-3, portado de app-shell shell.html:131-137). El punto
+   era SIEMPRE verde: setSyncPipState() alternaba las clases y la hoja no tenía ni una regla —
+   'sync error' se pintaba idéntico a 'synced' y sólo cambiaba la etiqueta de 10px. Mapeo nativo:
+   aquí --accent ES --danger (ambos el sello), así que syncing pulsa en --live, no en accent. */
+.sync-pip .dot{background:var(--ink-faint);transition:background .15s}
+.sync-pip.on .dot{background:var(--live)}
+.sync-pip.syncing .dot{background:var(--live);animation:pip-pulse 1s infinite}
+.sync-pip.error .dot{background:var(--danger)}
+@keyframes pip-pulse{0%,100%{opacity:1}50%{opacity:.3}}
 /* la LÍNEA de estado puede caerse en estrecho — es prosa. Los BOTONES no:
    `.tstate` se llevaba consigo la única puerta a los ajustes y al ⟳, así
    que bajo 1120 la app quedaba sin forma de configurarse. */
