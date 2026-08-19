@@ -121,4 +121,9 @@ python3 -m http.server <fresh port>   # SW caches aggressively — bump the port
 ```
 Verify round-trip: seed a repo-scoped PAT in Settings → ⟳ → cards appear → open a note →
 click a wikilink → reload (corpus must survive from cache). Backport policy: shell plumbing
-bugs get fixed in app-shell first, then hand-ported here.
+bugs get fixed in app-shell first, then hand-ported here. **But VERIFY THE SELECTORS EXIST before
+porting anything that touches chrome** — the V2 redesign removed the shell's mobile scaffolding
+(bottom tabs, side sheet, FAB — see `index.html:1162`) and renamed the rest, so `.topbar`,
+`.content` and `.claude-panel` have ZERO matches here; this app uses `#top`, `#work`, `#app`. A
+shell block pasted in blind styles nothing while reading as a fix in the diff, and the gate cannot
+see it. (Audit 2026-08-17 P1-4/P3-9: the prescribed safe-area port was exactly this no-op.)
