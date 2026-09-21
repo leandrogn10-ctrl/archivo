@@ -4139,7 +4139,7 @@ function renderPreview() {
   side.innerHTML = `<div class="prev">
     <h2>${escapeHtml(n.fm.title || n.slug)}</h2>
     <div class="meta"><span>${escapeHtml(n.folder)}</span>${n.fm.date ? `<span>${escapeHtml(String(n.fm.date))}</span>` : ''}
-      <span>Pluma <b>${n.fm.provenance === 'external' ? 'ajena' : n.fm.provenance === 'ai' ? 'IA' : 'humana'}</b></span></div>
+      <span>Pluma <b>${({external:'ajena', ai:'IA', hybrid:'híbrida', correo:'correo', human:'humana'})[n.fm.provenance || 'human'] || n.fm.provenance}</b></span></div>
     <div class="stamps" style="--h:${PANO.hue(n.folder)};--hi:${PANO.ink(n.folder)}">
       <span class="sello">${escapeHtml(TYPE_ES[type] || type)}</span>${pv ? `<span class="sello rojo">${escapeHtml(pv.txt)}</span>` : ''}</div>
     <div class="body">${escapeHtml(excerptOf(n, ''))}</div>
