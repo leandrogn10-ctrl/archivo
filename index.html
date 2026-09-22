@@ -1597,9 +1597,16 @@ function losPair() {
    so the model swaps with no diff and no failing test — and the ficha-heavy consulta desk is exactly
    where a silent tier change would show up as worse answers, not as an error. The CLI takes a full
    model id. Legacy stored ids are normalized once in migrate(), not per call. */
+// API content may be a block array (the desk wraps its newest turn for cache_control); the CLI wants
+// text. Concatenating the array raw printed "[object Object]" in place of every follow-up question.
+function losText(c) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.filter(b => b && b.type === 'text').map(b => b.text).join('\n\n');
+  throw new Error('unrenderable message content');
+}
 function losFlatten(messages) {   // the CLI takes ONE prompt → a multi-turn thread renders as a transcript
-  if (messages.length === 1) return messages[0].content;
-  return messages.map(m => (m.role === 'user' ? 'Leandro' : 'Claude') + ': ' + m.content).join('\n\n');
+  if (messages.length === 1) return losText(messages[0].content);
+  return messages.map(m => (m.role === 'user' ? 'Leandro' : 'Claude') + ': ' + losText(m.content)).join('\n\n');
 }
 // Streams the helper's SSE; onDelta (optional) receives the CUMULATIVE text, matching streamClaude.
 async function callClaudeSub({ system, messages, model, maxTokens, onDelta, signal }) {
@@ -1782,6 +1789,9 @@ const ASK_SYSTEM =
   "Answer USING ONLY the numbered fichas given as context across the conversation.\n" +
   "- Ground every claim in the fichas and cite them inline by number, e.g. [1], [3].\n" +
   "- If the fichas do not cover the question, say so plainly. Never invent facts or citations.\n" +
+  "- You see only what a KEYWORD search surfaced, never the whole archive: a concept the fichas never " +
+  "name can miss the notes that are instances of it. Scope every absence claim " +
+  "to 'the fichas I was given', never 'the archive', and name the specific terms worth searching next.\n" +
   "- A ficha tagged provenance:external/ai/hybrid is NOT Leandro's own thinking — attribute it " +
   "as an outside or AI piece kept in the archive, never as his own view.\n" +
   "- Reply in the same language as the question (Spanish or English). Be dry, literate and concise. " +
@@ -4302,6 +4312,8 @@ const SEARCH_SYNONYMS = (() => {
     ['essay', 'ensayo'],
     ['paper', 'trabajo'], ['book', 'libro'], ['reading', 'lectura', 'readings'],
     ['grade', 'nota', 'calificacion', 'calificación'],
+    // civil society — an org's own fichas say "nonprofit", almost never "NGO"
+    ['ngo', 'ngos', 'ong', 'ongs', 'nonprofit', 'nonprofits', 'non-profit', 'non-profits', 'not-for-profit', 'sin fines de lucro', 'charity', 'charities'],
     // debate
     ['judge', 'juez', 'jueza'], ['round', 'ronda'], ['motion', 'mocion', 'moción'], ['case', 'caso'],
     ['argument', 'argumento', 'arguments', 'argumentos', 'argumentation', 'argumentativo', 'argumentar', 'argumentacion', 'argumentative', 'argumenta', 'argumentativa', 'argumentativas'],
@@ -4913,10 +4925,11 @@ function searchNotesScored(q) {
   });
   const fullPhrase = _norm(q);
 
-  const results = candidates.map(n => {
+  // pass 1: per-note, per-group field score — kept apart so pass 2 can weight each group by rarity
+  const df = tokenGroups.map(() => 0);
+  const rows = candidates.map(n => {
     const f = _noteSearchFields(n);
-    let score = 0, tokensHit = 0;
-    for (const group of tokenGroups) {
+    const per = tokenGroups.map((group, gi) => {
       // once per FIELD per group, not per variant — a group with more synonyms
       // (e.g. 5 family-term variants) shouldn't outscore a group with fewer
       // just because more of its variants happen to appear
@@ -4933,12 +4946,24 @@ function searchNotesScored(q) {
       if (!titleHit && group.stems.some(s => f.titleStems.has(s))) titleHit = true;
       if (!tagsHit && group.stems.some(s => f.tagsStems.has(s))) tagsHit = true;
       if (!bodyHit && group.stems.some(s => f.bodyStems.has(s))) bodyHit = true;
-      if (titleHit) score += 10;
-      if (tagsHit) score += 5;
-      if (wikiHit) score += 6;
-      if (bodyHit) score += 1;
-      if (titleHit || tagsHit || wikiHit || bodyHit) tokensHit++;
-    }
+      const s = (titleHit ? 10 : 0) + (tagsHit ? 5 : 0) + (wikiHit ? 6 : 0) + (bodyHit ? 1 : 0);
+      if (s) df[gi]++;
+      return s;
+    });
+    return { n, f, per };
+  });
+  /* pass 2: IDF. Flat weights let filler outrank meaning — a chatty question with one content word
+     ranked a title containing "in" first (+10) and the real answers 259th and below, because the one
+     word that meant anything was just another +1. Each group is scaled by
+     its rarity relative to the rarest group, so a one-word query scores exactly as before and
+     WEAK_ABS keeps its meaning for the strongest token. */
+  const N = candidates.length;
+  const idf = df.map(d => Math.log((N + 1) / (d + 1)));
+  const top = Math.max(...idf);
+  const w = idf.map(x => top > 0 ? x / top : 1);
+  const results = rows.map(({ n, f, per }) => {
+    let score = 0, tokensHit = 0;
+    per.forEach((s, gi) => { if (s) { score += s * w[gi]; tokensHit++; } });
     if (rawTokens.length > 1 && f.title.includes(fullPhrase)) score += 8;       // exact-phrase bonus
     if (rawTokens.length > 1 && f.body.includes(fullPhrase)) score += 3;
     if (tokensHit === tokenGroups.length && tokenGroups.length > 1) score += 4; // all-tokens-present bonus
