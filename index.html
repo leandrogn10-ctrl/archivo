@@ -1612,7 +1612,7 @@ function losFlatten(messages) {   // the CLI takes ONE prompt → a multi-turn t
 // Streams the helper's SSE; onDelta (optional) receives the CUMULATIVE text, matching streamClaude.
 // tools: 'none' (default) or 'corpus' — the archivero's read-only research sandbox (helper-side; see
 // ARCHIVO_CORPUS there). timeoutS is sent to the helper, which clamps it; onTool gets {name, path, pattern}.
-async function callClaudeSub({ system, messages, model, maxTokens, onDelta, signal, tools = 'none', timeoutS = 90, onTool }) {
+async function callClaudeSub({ system, messages, model, maxTokens, onDelta, signal, tools = 'none', timeoutS = 90, onTool, onSandbox }) {
   const tok = await losPair();
   const ac = new AbortController();
   if (signal) signal.addEventListener('abort', () => ac.abort());
@@ -1642,6 +1642,7 @@ async function callClaudeSub({ system, messages, model, maxTokens, onDelta, sign
       let ev; try { ev = JSON.parse(payload); } catch { continue; }
       if (ev.t != null) { text += (brk && text ? '\n\n' : '') + ev.t; brk = false; onDelta?.(text); }
       else if (ev.tool) { brk = true; onTool?.(ev.tool); }    // text before and after a tool call are separate blocks
+      else if (ev.sandbox) onSandbox?.(ev);                    // research asked for, gate closed — see the helper's _sandbox_verdict
       else if (ev.error) throw new Error(ev.error);
       else if (ev.done) return text;
     }
@@ -1698,7 +1699,7 @@ async function streamClaude({ system, messages, maxTokens = 8000, onDelta, sub =
   if (canUseSub()) {
     try {
       const text = await callClaudeSub({ system: system + (sub.systemExtra || ''), messages, model: state.settings.claude.model, maxTokens, onDelta,
-                                         tools: sub.tools, timeoutS: sub.timeoutS, onTool: sub.onTool });
+                                         tools: sub.tools, timeoutS: sub.timeoutS, onTool: sub.onTool, onSandbox: sub.onSandbox });
       noteVia('sub');
       // usage is null by construction: the CLI reports no token receipt, so the desk's colofón and
       // running tally are skipped (both already guard on `usage`). stopReason is null too — the CLI
@@ -2255,6 +2256,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
   };
 
   const research = [];                                              // this turn's tool calls, in order
+  let sandbox = null;                                               // set when the helper refused research this turn
   const onTool = t => {
     research.push(t);
     const f = askCorpusFile(t.path);
@@ -2267,7 +2269,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
   try {
     const { text: answer, stopReason, usage } = await streamClaude({
       system: ASK_SYSTEM, messages: askApiMessages(), maxTokens: ASK_MAX_TOKENS, onDelta: paint,
-      sub: { tools: 'corpus', systemExtra: ASK_CORPUS_SYSTEM, timeoutS: ASK_CORPUS_TIMEOUT_S, onTool },
+      sub: { tools: 'corpus', systemExtra: ASK_CORPUS_SYSTEM, timeoutS: ASK_CORPUS_TIMEOUT_S, onTool, onSandbox: ev => { sandbox = ev; } },
     });
     settled = true;
     ask.turns.push({ role: 'assistant', content: answer });
@@ -2275,6 +2277,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
     askMarkUnopened(prose);
     if (hits.length) prose.insertAdjacentHTML('beforeend', askCitesBlock(hits));
     prose.insertAdjacentHTML('beforeend', askResearchBlock(research));
+    prose.insertAdjacentHTML('beforeend', askSandboxMark(sandbox));
     prose.insertAdjacentHTML('beforeend', askExpandMark(exp));
     if (stopReason === 'max_tokens') prose.insertAdjacentHTML('beforeend', askContinueBlock());
     if (usage) {                                                     // the receipt, finally read
@@ -2337,6 +2340,15 @@ function askResearchBlock(research) {
   };
   return `<details class="ask-cites"><summary>investigó · ${greps} búsqueda${greps === 1 ? '' : 's'} · abrió ${files.length}</summary>` +
     `<div class="ask-cite-list">${files.map(row).join('')}</div></details>`;
+}
+
+// the research gate closed: the answer came from the seeded fichas only, and the page must say why
+function askSandboxMark(sb) {
+  if (!sb) return '';
+  const why = sb.sandbox === 'pending'
+    ? `verificando el sandbox para Claude Code ${sb.version} — vuelve solo en ~1 min`
+    : `el sandbox no pasó su canario para Claude Code ${sb.version} — ver ~/.leandro-os/archivero-sandbox.json`;
+  return `<div class="ask-colofon">investigación en pausa: ${escapeHtml(why)}</div>`;
 }
 
 function askContinueBlock() {
