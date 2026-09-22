@@ -1823,6 +1823,8 @@ const ASK_CORPUS_SYSTEM =
   "across the archive, or to check an exact detail in an original.\n" +
   "- Search narrow first: Grep with output_mode files_with_matches or count, then Read only what you need. Never " +
   "Read a whole texto when a Grep with a few context lines answers it.\n" +
+  "- Originals in textos/ break lines mid-sentence, so a multi-word phrase often fails to match there: Grep a " +
+  "single distinctive word (a name, a rare term), then read around the hit.\n" +
   "- Before saying something is NOT in the archive, Grep for it and its obvious variants.\n" +
   "- Never offer to search further or suggest terms to try: if another search would improve the answer, run it. " +
   "Stop searching when more searching would not change the answer.\n" +
@@ -2206,13 +2208,19 @@ async function askSubmit() {
 
 /* The reply language is decided HERE, not left to a prose rule: the prompt around the question is Spanish
    scaffolding plus mostly-Spanish fichas, and "reply in the question's language" lost to that on every English
-   question tested (22-sep). Spanish if it carries Spanish marks or ≥2 Spanish function words; else English. */
+   question tested (22-sep). */
 const ASK_ES_WORDS = new Set(['que', 'qué', 'de', 'el', 'la', 'los', 'las', 'en', 'por', 'para', 'cómo', 'como', 'cuál', 'cuáles',
   'mis', 'he', 'del', 'con', 'una', 'algún', 'alguna', 'sobre', 'dónde', 'cuándo', 'quién', 'hay', 'es', 'son', 'y']);
+const ASK_EN_WORDS = new Set(['what', 'which', 'who', 'how', 'when', 'where', 'why', 'is', 'are', 'was', 'were', 'the', 'a', 'an',
+  'and', 'did', 'do', 'does', 'i', 'my', 'me', 'have', 'has', 'of', 'to', 'in', 'on', 'about', 'any', 'abt', 'ive', 'ever', 'there']);
+// function words decide; a Spanish NAME in an English question ("what is Cometas Montañesas?") must not flip it,
+// so accents only break a tie, and ¿/¡ count as Spanish evidence
 function askLang(q) {
-  if (/[ñ¿¡áéíóú]/i.test(q)) return 'es';
   const words = String(q).toLowerCase().split(/[^a-záéíóúñü]+/).filter(Boolean);
-  return words.filter(w => ASK_ES_WORDS.has(w)).length >= 2 ? 'es' : 'en';
+  const es = words.filter(w => ASK_ES_WORDS.has(w)).length + (/[¿¡]/.test(q) ? 2 : 0);
+  const en = words.filter(w => ASK_EN_WORDS.has(w)).length;
+  if (es !== en) return es > en ? 'es' : 'en';
+  return /[ñáéíóú]/i.test(q) ? 'es' : 'en';
 }
 function askLangLine(q) { return askLang(q) === 'es' ? 'Responde en español.' : 'Answer in English.'; }
 

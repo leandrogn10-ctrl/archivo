@@ -71,6 +71,7 @@ function run(ctx) {
   const { askLang: L, askCorpusFile: CF, askContextBlock: CB } = ctx.api;
   ok(L('any NGO ive been interested in in the past') === 'en' && L('what abt quillwater') === 'en', 'lang: english questions answer in english');
   ok(L('que cursos de economia he tomado') === 'es' && L('¿quién es?') === 'es', 'lang: spanish questions answer in spanish');
+  ok(L('what is Cometas Montañesas?') === 'en', 'lang: a Spanish NAME in an English question keeps it English');
   const cf = CF('/Users/x/Projects/archivo-corpus/proyectos/quillwater-0.md');
   ok(cf && cf.folder === 'proyectos' && cf.slug === 'quillwater-0' && CF('/Users/x/.leandro-os/token.md') === null, 'paths: only files inside the corpus count as opened');
   const hdr = CB([{ slug: 'q', folder: 'fuentes', fm: { title: 'Q', type: 'evaluation', texto: 'textos/abc.md' }, body: 'b' }]);
@@ -91,7 +92,8 @@ const PLANTS = [
   ['IDF removed', s => s.replace('const w = idf.map(x => top > 0 ? x / top : 1);', 'const w = idf.map(() => 1);'), 'idf'],
   ['losText bypassed', s => s.replace("+ ': ' + losText(m.content)", "+ ': ' + m.content"), 'flatten'],
   ['tools value passed through', s => s.replace("tools: tools === 'corpus' ? 'corpus' : 'none'", 'tools'), 'only corpus or none'],
-  ['lang forced to spanish', s => s.replace("if (/[ñ¿¡áéíóú]/i.test(q)) return 'es';", "return 'es';"), 'lang: english'],
+  ['lang forced to spanish', s => s.replace("if (es !== en) return es > en ? 'es' : 'en';", "return 'es';"), 'lang: english'],
+  ['accents decide language', s => s.replace("if (es !== en) return es > en ? 'es' : 'en';", "if (/[ñáéíóú]/i.test(q)) return 'es'; if (es !== en) return es > en ? 'es' : 'en';"), 'Spanish NAME'],
   ['texto dropped from header', s => s.replace('${prov}${tags}${texto})', '${prov}${tags})'), 'header'],
   ['research prompt leaks to API', s => s.replace('stream: true, system, messages', "stream: true, system: system + (sub.systemExtra || ''), messages"), 'api:'],
   ['extra groups ignored', s => s.replace('for (const ph of extra) {', 'for (const ph of []) {'), 'org is reached'],
