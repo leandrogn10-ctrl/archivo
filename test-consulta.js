@@ -17,6 +17,12 @@ function load(html) {
     fn(/^function askMergeRanked/), fn(/^function askParseExpansion/), fn(/^function losText/), fn(/^function losFlatten/),
     'this.api = { searchNotesScored, askMergeRanked, askParseExpansion, losFlatten, W: ASK_EXPAND_WEIGHT, R: ASK_EXPAND_RESERVED };',
     'this.subSrc = ' + JSON.stringify(fn(/^async function callClaudeSub/)) + ';',
+    'this.streamSrc = ' + JSON.stringify(fn(/^async function streamClaude/)) + ';',
+    src.slice(at(/^const ASK_ES_WORDS/), at(/^function askLangLine/) + 1).join('\n'),
+    fn(/^function askCorpusFile/),
+    'const ask = { cites: [], seen: new Set() }; const ASK_PER_FICHA = 7000;',
+    fn(/^function askContextBlock/),
+    'Object.assign(this.api, { askLang, askCorpusFile, askContextBlock });',
   ].join('\n');
   const ctx = { corpus: null };
   vm.createContext(ctx); vm.runInContext(code, ctx);
@@ -59,7 +65,19 @@ function run(ctx) {
   ok(flat.includes('q2') && !flat.includes('[object Object]'), 'flatten: block content arrives as text');
   ok(typeof F([{ role: 'user', content: [{ type: 'text', text: 'solo' }] }]) === 'string', 'flatten: a one-turn block thread is a string');
   // the Max path must ask for a tool-less run: fichas are data this app doesn't author (gap #1)
-  ok(/body: JSON\.stringify\(\{[^}]*tools: 'none'/.test(ctx.subSrc), 'tools: the Max-path body asks for tools:none');
+  // only 'corpus' or 'none' may leave the browser — a helper that doesn't know a value runs its FULL default tool set
+  ok(/body: JSON\.stringify\(\{[^}]*tools: tools === 'corpus' \? 'corpus' : 'none'/.test(ctx.subSrc), 'tools: the Max-path body sends only corpus or none');
+  // research mode (gap #2)
+  const { askLang: L, askCorpusFile: CF, askContextBlock: CB } = ctx.api;
+  ok(L('any NGO ive been interested in in the past') === 'en' && L('what abt quillwater') === 'en', 'lang: english questions answer in english');
+  ok(L('que cursos de economia he tomado') === 'es' && L('¿quién es?') === 'es', 'lang: spanish questions answer in spanish');
+  const cf = CF('/Users/x/Projects/archivo-corpus/proyectos/quillwater-0.md');
+  ok(cf && cf.folder === 'proyectos' && cf.slug === 'quillwater-0' && CF('/Users/x/.leandro-os/token.md') === null, 'paths: only files inside the corpus count as opened');
+  const hdr = CB([{ slug: 'q', folder: 'fuentes', fm: { title: 'Q', type: 'evaluation', texto: 'textos/abc.md' }, body: 'b' }]);
+  ok(hdr.includes('texto: textos/abc.md'), 'header: the seed names its original, or research mode cannot open it');
+  // the API path has no tools: the prose describing them must only ride the Max call
+  const apiBody = (ctx.streamSrc.match(/stream: true, system[^\n]*/) || [''])[0];
+  ok(apiBody.includes('system, messages') && !apiBody.includes('systemExtra'), 'api: the research prompt never reaches the tool-less API path');
   return fails;
 }
 
@@ -72,7 +90,10 @@ const PLANTS = [
   ['seat reservation removed', s => s.replace('b.slice(0, ASK_EXPAND_RESERVED).forEach(add);', ''), 'first seats'],
   ['IDF removed', s => s.replace('const w = idf.map(x => top > 0 ? x / top : 1);', 'const w = idf.map(() => 1);'), 'idf'],
   ['losText bypassed', s => s.replace("+ ': ' + losText(m.content)", "+ ': ' + m.content"), 'flatten'],
-  ['tools flag dropped', s => s.replace(", tools: 'none' })", ' })'), 'tools:none'],
+  ['tools value passed through', s => s.replace("tools: tools === 'corpus' ? 'corpus' : 'none'", 'tools'), 'only corpus or none'],
+  ['lang forced to spanish', s => s.replace("if (/[ñ¿¡áéíóú]/i.test(q)) return 'es';", "return 'es';"), 'lang: english'],
+  ['texto dropped from header', s => s.replace('${prov}${tags}${texto})', '${prov}${tags})'), 'header'],
+  ['research prompt leaks to API', s => s.replace('stream: true, system, messages', "stream: true, system: system + (sub.systemExtra || ''), messages"), 'api:'],
   ['extra groups ignored', s => s.replace('for (const ph of extra) {', 'for (const ph of []) {'), 'org is reached'],
 ];
 let bad = 0;

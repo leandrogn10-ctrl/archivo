@@ -88,6 +88,13 @@ títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
   `/claude/json` (measured 22-sep) — don't shorten `ASK_EXPAND_TIMEOUT` below that or it silently
   never runs. Every answer carries a `búsqueda ampliada:` line, including «no corrió — why».
   `node test-consulta.js` pins it on a synthetic corpus (this repo is public) with re-planted controls.
+- **Research mode** (Max path only): the desk sends `tools:'corpus'`; the helper gives the model READ-ONLY
+  Grep/Glob/Read over `~/Projects/archivo-corpus` (textos/ included) in a `--restricted` sandbox — its canary is
+  `~/.leandro-os/test_archivero_sandbox.py`, re-run it after any Claude Code upgrade. The seeded fichas stay (the
+  quality floor); `ASK_CORPUS_SYSTEM` rides ONLY the Max call (the API path has no tools). The seed header carries
+  `texto:` — without it the model couldn't find the original it was holding a tool to read. `[[slug]]` citations
+  not seeded or Read this thread are marked `.ask-unopened`. Reply language is decided in code (`askLang`).
+  `callClaudeSub` may only send `tools:'corpus'|'none'`: a helper that doesn't know a value runs its FULL tool set.
 - **Teclado.** Three grammars, one law (`k` baja / `j` sube — inverted vs vim on purpose):
   the list (j/k/↵/b), the mesa+sala (their six verdict letters), and **el folio**
   (`folioScroll` + the `view.mode === 'note'` block): j/k/↑↓ step 96px, espacio/AvPág page,
