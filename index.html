@@ -1645,7 +1645,9 @@ let CLAUDE_VIA = null;
 function noteVia(v) { CLAUDE_VIA = v; try { renderClaudeStatus(); } catch (e) {} }
 
 /* ── Claude plumbing (shell verbatim) ── */
-function isClaudeEnabled() { return !!(state.settings.claude.enabled && (canUseApi() || canUseSub())); }
+// `enabled` is born in the save-KEY handler, so it can only gate the key path — gating the Max plan on it
+// left a key-less Mac with Claude "disabled" while the helper answered fine. mode:'api' is the sub opt-out.
+function isClaudeEnabled() { return canUseSub() || !!(state.settings.claude.enabled && canUseApi()); }
 async function callClaude({ system, userMessage, maxTokens = 350 }) {
   if (canUseSub()) {
     try {
