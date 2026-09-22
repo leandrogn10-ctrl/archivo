@@ -1826,6 +1826,11 @@ const ASK_CORPUS_SYSTEM =
   "- Originals in textos/ break lines mid-sentence, so a multi-word phrase often fails to match there: Grep a " +
   "single distinctive word (a name, a rare term), then read around the hit.\n" +
   "- Before saying something is NOT in the archive, Grep for it and its obvious variants.\n" +
+  "- A question that asks for a LIST or a COUNT (which, how many, all, every, any) is never answered by the seed " +
+  "alone — it is a keyword sample, not an inventory. Build the inventory from the ARCHIVE, not from memory: " +
+  "list the archive's own candidates of that kind (Glob the filenames of that type of document, or Grep a word " +
+  "every such document contains), then classify each one. Searching only for names you already know finds only " +
+  "the famous instances — his may not be famous, and a document rarely names its own category.\n" +
   "- Never offer to search further or suggest terms to try: if another search would improve the answer, run it. " +
   "Stop searching when more searching would not change the answer.\n" +
   "- Cite a seeded ficha as [n] and a file you opened yourself as [[slug]] (its filename without .md). Never cite " +
