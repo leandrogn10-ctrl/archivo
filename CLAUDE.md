@@ -95,6 +95,10 @@ títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
   `texto:` — without it the model couldn't find the original it was holding a tool to read. `[[slug]]` citations
   not seeded or Read this thread are marked `.ask-unopened`. Reply language is decided in code (`askLang`).
   `callClaudeSub` may only send `tools:'corpus'|'none'`: a helper that doesn't know a value runs its FULL tool set.
+- **The gold set** lives OUTSIDE this public repo, in `~/.leandro-os/archivero-gold/` (real ficha names): `node run.js`
+  (retrieval, seconds) runs in this repo's local pre-commit hook for any commit touching index.html; `--answers` runs
+  research mode on `CLAUDE_MODELS[0]`. A wrong answer in real use becomes a gold item. Model choice matters: list
+  questions pass on Opus 5 and fail on Sonnet 5 with the same prompt (22-sep).
 - **Teclado.** Three grammars, one law (`k` baja / `j` sube — inverted vs vim on purpose):
   the list (j/k/↵/b), the mesa+sala (their six verdict letters), and **el folio**
   (`folioScroll` + the `view.mode === 'note'` block): j/k/↑↓ step 96px, espacio/AvPág page,
