@@ -78,7 +78,16 @@ títulos reales del archivo y este repo es PÚBLICO. Están en local, en la rama
 - `renderDrawers/renderView` — catalogue (cards grouped by folder) vs folio (reader +
   backlinks scan); `view` is the tiny router
 - Search: `/` focuses, title(10)>tags(5)>body(1) scoring — the F14 seed. `searchNotesScored`
-  is the ranker; `searchNotes` is the names-only wrapper
+  is the ranker; `searchNotes` is the names-only wrapper. **Each token is IDF-weighted** (relative
+  to the rarest token), so filler ("in", "past") can't outrank the one word that means something.
+- **La consulta's expansion** (`askExpand`): before retrieval, Haiku reads the question against the
+  corpus's OWN tag roster (tags used ≥2×) and names instances of its concepts — keyword search
+  can't know an org is an "NGO" when its fichas never say so. Tags not in the roster are DROPPED
+  (the model suggests, never invents); the rest go to the ranker at `ASK_EXPAND_WEIGHT`, and the
+  literal question's top `ASK_EXPAND_RESERVED` hits keep their seats. ~10–12s on the Max helper's
+  `/claude/json` (measured 22-sep) — don't shorten `ASK_EXPAND_TIMEOUT` below that or it silently
+  never runs. Every answer carries a `búsqueda ampliada:` line, including «no corrió — why».
+  `node test-consulta.js` pins it on a synthetic corpus (this repo is public) with re-planted controls.
 - **Teclado.** Three grammars, one law (`k` baja / `j` sube — inverted vs vim on purpose):
   the list (j/k/↵/b), the mesa+sala (their six verdict letters), and **el folio**
   (`folioScroll` + the `view.mode === 'note'` block): j/k/↑↓ step 96px, espacio/AvPág page,

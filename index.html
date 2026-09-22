@@ -1805,6 +1805,7 @@ const ask = {
   busy: false,
   lastStats: null,    // { read, considered } from the most recent retrieval
   usage: [],          // per-turn API usage — the desk's receipts (see askColofon)
+  expanded: new Set(), // tags the expansion already chose this thread — sent back as "already searched"
 };
 const askThread = document.getElementById('ask-thread');
 const askInput = document.getElementById('ask-input');
@@ -1812,20 +1813,21 @@ const askSendBtn = document.getElementById('ask-send');
 
 /* budget-driven gather: rank order, every hit above the relevance floor, until
    the char budget runs out. Returns the notes plus how many the budget cut. */
-function askGather(q) {
-  const scored = searchNotesScored(q);
-  if (!scored.length) return { hits: [], considered: 0, chars: 0 };
+function askGather(q, exp = null) {
+  const base = searchNotesScored(q);
+  const extra = exp && exp.ok ? [...exp.tags, ...exp.terms] : [];
+  const wide = extra.length ? searchNotesScored(q, extra, ASK_EXPAND_WEIGHT) : [];
+  const ranked = askMergeRanked(base, wide);
+  if (!ranked.length) return { hits: [], considered: 0, chars: 0 };
   // the thread's remaining headroom caps this turn — a late follow-up gets what's left, not a full 140k
   const left = Math.max(0, askThreadBudget() - ask.chars);
   const budget = Math.min(ASK_CHAR_BUDGET, left);
   // WHICH ceiling bound this turn decides whether a dropped ficha is bad news: under the
   // per-turn cap it simply arrives on the next question, under the thread cap it never does
   const boundByThread = left < ASK_CHAR_BUDGET;
-  const floor = scored[0].score * ASK_SCORE_FLOOR;
   const hits = [];
   let chars = 0, considered = 0, starved = 0;                      // starved: relevant, unseen, didn't fit
-  for (const { n, score } of scored) {
-    if (score < floor) break;
+  for (const n of ranked) {
     considered++;
     if (ask.seen.has(n.slug) || hits.length >= ASK_MAX_FICHAS) continue;
     const take = Math.min(String(n.body || '').trim().length, ASK_PER_FICHA);
@@ -1833,6 +1835,124 @@ function askGather(q) {
     hits.push(n); chars += take;
   }
   return { hits, considered, chars, starved: boundByThread ? starved : 0 };
+}
+
+/* Each list is cut at its OWN relevance floor, then the question's own top hits keep the first
+   ASK_EXPAND_RESERVED seats and the widened ranking fills the rest. The expansion can add, but a
+   wrong guess can never push out what the literal question found. */
+function askMergeRanked(base, wide) {
+  const cut = r => r.length ? r.filter(x => x.score >= r[0].score * ASK_SCORE_FLOOR).map(x => x.n) : [];
+  const b = cut(base), wd = cut(wide);
+  const out = [], seen = new Set();
+  const add = n => { if (!seen.has(n.slug)) { seen.add(n.slug); out.push(n); } };
+  b.slice(0, ASK_EXPAND_RESERVED).forEach(add);
+  wd.forEach(add);
+  b.forEach(add);
+  return out;
+}
+
+/* ── LA EXPANSIÓN — keyword search can't know that an organization he interned at is an "NGO":
+   those fichas never say the word. A fast model reads the question against the corpus's OWN tag
+   vocabulary and names the instances; the code keeps only tags that really exist (the model can
+   suggest, never invent) and hands them to the ranker at a discount. Failure is never silent:
+   every answer carries a line saying what the expansion added, or why it didn't run. */
+const ASK_EXPAND_MODEL    = 'claude-haiku-4-5';
+const ASK_EXPAND_TIMEOUT  = 25000;   // the Max path measured ~10s with the roster (22-sep); 3s would mean "never runs"
+const ASK_EXPAND_WEIGHT   = 0.5;
+const ASK_EXPAND_RESERVED = 20;
+const ASK_EXPAND_MAX_TAGS = 12, ASK_EXPAND_MAX_TERMS = 6;
+let askRosterCache = null;           // { notes, list, set } — rebuilt when the corpus object changes
+function askRoster() {
+  if (askRosterCache && askRosterCache.notes === corpus.notes) return askRosterCache;
+  const c = new Map();
+  for (const n of corpus.notes) {
+    if (!esCatalogo(n) || !Array.isArray(n.fm.tags)) continue;
+    for (const t of n.fm.tags) c.set(t, (c.get(t) || 0) + 1);
+  }
+  const list = [...c.entries()].filter(([, k]) => k >= 2).sort((a, b) => b[1] - a[1]);
+  askRosterCache = { notes: corpus.notes, list, set: new Set(list.map(([t]) => t)) };
+  return askRosterCache;
+}
+function askExpandPrompt(q, list, already) {
+  return "You expand a search query over Leandro's private archive. Keyword search only finds notes that " +
+    "contain the query's own words, so a CATEGORY word misses the notes about specific INSTANCES of it " +
+    "(a named organization, program, person, place, course).\n\n" +
+    "Below is the archive's tag vocabulary, one per line as `tag count`. Pick the tags whose notes would " +
+    "answer the question: specific instances of the question's concepts first, and broad tags only when " +
+    "nothing specific fits. Also give up to " + ASK_EXPAND_MAX_TERMS + " extra search words or synonyms " +
+    "(either language) the notes might use instead of the question's words.\n\n" +
+    "Reply with ONLY one JSON object, no prose, shaped:\n" +
+    '{"tags": [<up to ' + ASK_EXPAND_MAX_TAGS + ' tags copied exactly from the list>], "terms": [<up to ' + ASK_EXPAND_MAX_TERMS + ' words>]}\n\n' +
+    "TAGS:\n" + list.map(([t, k]) => t + ' ' + k).join('\n') +
+    (already.length ? "\n\nALREADY SEARCHED earlier in this conversation (prefer tags not in this list): " + already.join(', ') : '') +
+    "\n\nQUESTION: " + q;
+}
+// pure: model text → validated expansion. Anything not in the roster is dropped, not trusted.
+function askParseExpansion(text, rosterSet) {
+  const m = String(text || '').match(/\{[\s\S]*\}/);
+  if (!m) return { ok: false, why: 'respuesta sin JSON', tags: [], terms: [] };
+  let j; try { j = JSON.parse(m[0]); } catch { return { ok: false, why: 'JSON inválido', tags: [], terms: [] }; }
+  const strs = a => Array.isArray(a) ? a.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean) : [];
+  const proposed = strs(j.tags);
+  const tags = [...new Set(proposed.filter(t => rosterSet.has(t)))].slice(0, ASK_EXPAND_MAX_TAGS);
+  const terms = [...new Set(strs(j.terms).filter(t => t.length >= 2 && t.length <= 40))].slice(0, ASK_EXPAND_MAX_TERMS);
+  if (!tags.length && !terms.length) return { ok: false, why: 'nada utilizable', tags, terms, dropped: proposed.length };
+  return { ok: true, tags, terms, dropped: proposed.length - tags.length };
+}
+// one no-tools completion on the cheap model: the Max helper's /claude/json, else the key
+async function callClaudeQuick(prompt, { model, maxTokens = 400, timeout }) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeout);
+  try {
+    if (canUseSub()) {
+      try {
+        const tok = await losPair();
+        const res = await fetch(LOS_HELPER_URL + '/claude/json', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LOS-Token': tok || '' },
+          body: JSON.stringify({ prompt, model, effort: 'low' }), signal: ac.signal,
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || 'helper HTTP ' + res.status);
+        return { text: d.text || '', via: 'sub' };
+      } catch (e) {
+        if (claudeMode() === 'sub' || ac.signal.aborted) throw e;
+      }
+    }
+    if (!canUseApi()) throw new Error('sin helper ni API key');
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ac.signal,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.claude.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!res.ok) throw new Error('API ' + res.status);
+    const data = await res.json();
+    return { text: data.content?.find(b => b.type === 'text')?.text || '', via: 'api', usage: data.usage };
+  } finally { clearTimeout(timer); }
+}
+async function askExpand(q) {
+  const { list, set } = askRoster();
+  if (!list.length) return { ok: false, why: 'sin etiquetas en la bodega', tags: [], terms: [] };
+  try {
+    const r = await callClaudeQuick(askExpandPrompt(q, list, [...ask.expanded]), { model: ASK_EXPAND_MODEL, timeout: ASK_EXPAND_TIMEOUT });
+    const exp = askParseExpansion(r.text, set);
+    exp.via = r.via; exp.usage = r.usage || null;
+    exp.tags.forEach(t => ask.expanded.add(t));
+    return exp;
+  } catch (e) {
+    return { ok: false, why: e.name === 'AbortError' ? 'tardó más de ' + ASK_EXPAND_TIMEOUT / 1000 + 's' : String(e.message || e).slice(0, 80), tags: [], terms: [] };
+  }
+}
+// the readout — present on EVERY answer, because an expansion that silently never runs reads
+// exactly like one that ran and found nothing
+function askExpandMark(exp) {
+  if (!exp) return '';
+  if (!exp.ok) return `<div class="ask-colofon">búsqueda ampliada: no corrió — ${escapeHtml(exp.why)}</div>`;
+  const shown = [...exp.tags, ...exp.terms];
+  const head = shown.slice(0, 5).join(', '), more = shown.length > 5 ? ` +${shown.length - 5}` : '';
+  const p = ASK_PRICE[ASK_EXPAND_MODEL], u = exp.usage;
+  const cost = u && p ? ((u.input_tokens || 0) * p.in + (u.output_tokens || 0) * p.out) / 1e6 : null;
+  const via = exp.via === 'api' ? ' · vía API' + (cost != null ? ' ' + askUsd(cost) : '') : '';
+  return `<div class="ask-colofon" title="${escapeHtml(shown.join(', '))}">búsqueda ampliada: ${escapeHtml(head)}${more}${via}</div>`;
 }
 
 function askContextBlock(hits) {
@@ -1968,7 +2088,7 @@ function askStarters() {
 
 function askReset() {
   ask.turns = []; ask.cites = []; ask.seen = new Set(); ask.chars = 0; ask.lastStats = null;
-  ask.usage = [];
+  ask.usage = []; ask.expanded = new Set();
   askRenderEmpty();
   askInput.value = ''; askInput.style.height = 'auto';
 }
@@ -2012,7 +2132,18 @@ async function askSubmit() {
   if (!ask.turns.length) askThread.innerHTML = '';
   askPushUser(q);
 
-  const { hits, considered, chars, starved } = askGather(q);
+  // expansion first: it decides which fichas get read. The thread shows it's working, and the
+  // send button stays locked so a second question can't race this one's retrieval.
+  ask.busy = true; askSendBtn.disabled = true;
+  const wait = document.createElement('div');
+  wait.className = 'ask-msg claude';
+  wait.innerHTML = '<div class="ask-who">✦ el archivero</div><div class="ask-prose"><div class="ask-thinking">ampliando la búsqueda…</div></div>';
+  askThread.appendChild(wait); askScroll(true);
+  const exp = await askExpand(q);
+  wait.remove();
+  ask.busy = false; askSendBtn.disabled = false;
+
+  const { hits, considered, chars, starved } = askGather(q, exp);
   if (!ask.turns.length && !hits.length) {
     const el = askPushClaude();
     el.classList.add('error');
@@ -2029,7 +2160,7 @@ async function askSubmit() {
   ask.lastStats = { read: ask.seen.size, considered };
   await askRun(
     block ? `Fichas nuevas del archivo (contexto):\n\n${block}\n\n———\n\nPregunta: ${q}` : q,
-    { hits, considered, citeMark, chars },
+    { hits, considered, citeMark, chars, exp },
   );
 }
 
@@ -2047,7 +2178,7 @@ function askApiMessages() {
 /* one model turn: push the user content, stream the answer into a fresh bubble,
    roll the whole thing back if it dies. `hits` is only for the citation list —
    a continuation turn passes none. */
-async function askRun(userContent, { hits = [], considered = null, citeMark = ask.cites.length, chars = 0 } = {}) {
+async function askRun(userContent, { hits = [], considered = null, citeMark = ask.cites.length, chars = 0, exp = null } = {}) {
   ask.turns.push({ role: 'user', content: userContent });
   askSetSub(askSub(considered));
 
@@ -2080,6 +2211,7 @@ async function askRun(userContent, { hits = [], considered = null, citeMark = as
     ask.turns.push({ role: 'assistant', content: answer });
     prose.innerHTML = askLinkRefs(mdRender(answer));
     if (hits.length) prose.insertAdjacentHTML('beforeend', askCitesBlock(hits));
+    prose.insertAdjacentHTML('beforeend', askExpandMark(exp));
     if (stopReason === 'max_tokens') prose.insertAdjacentHTML('beforeend', askContinueBlock());
     if (usage) {                                                     // the receipt, finally read
       ask.usage.push(usage);
@@ -4906,9 +5038,11 @@ function splitByStrength(scored) {
 
 // the ranker itself — scores kept, because the consulta desk sizes its retrieval
 // off the score curve (relevance floor), not off a fixed hit count
-function searchNotesScored(q) {
+// `extra`: whole phrases (tags / terms from the consulta desk's expansion) scored as ONE group each,
+// at `extraWeight`, and left out of the all-tokens bonus — they widen the net, they don't redefine the question
+function searchNotesScored(q, extra = [], extraWeight = 1) {
   const rawTokens = _norm(q).split(/[^a-z0-9]+/).filter(t => t.length > 1);
-  if (!rawTokens.length) return [];
+  if (!rawTokens.length && !extra.length) return [];
   const candidates = corpus.notes.filter(esCatalogo);
   // word-boundary regex per variant, compiled once per search (not per note) — a plain
   // .includes() let short variants match mid-word ("tio" inside "gestion", "caso" inside
@@ -4921,8 +5055,20 @@ function searchNotesScored(q) {
     return {
       regexes: variants.map(v => new RegExp('\\b' + _escapeRegExp(v) + '\\b')),
       stems: [...new Set(variants.map(_stem))],
+      weight: 1, extra: false,
     };
   });
+  for (const ph of extra) {
+    const v = _norm(ph).trim();
+    if (!v) continue;
+    const variants = [...new Set([v, v.replace(/-/g, ' ')])];
+    tokenGroups.push({
+      regexes: variants.map(x => new RegExp('\\b' + _escapeRegExp(x) + '\\b')),
+      stems: /^[a-z0-9]+$/.test(v) ? [_stem(v)] : [],
+      weight: extraWeight, extra: true,
+    });
+  }
+  const baseGroups = tokenGroups.filter(g => !g.extra).length;
   const fullPhrase = _norm(q);
 
   // pass 1: per-note, per-group field score — kept apart so pass 2 can weight each group by rarity
@@ -4963,10 +5109,14 @@ function searchNotesScored(q) {
   const w = idf.map(x => top > 0 ? x / top : 1);
   const results = rows.map(({ n, f, per }) => {
     let score = 0, tokensHit = 0;
-    per.forEach((s, gi) => { if (s) { score += s * w[gi]; tokensHit++; } });
+    per.forEach((s, gi) => {
+      if (!s) return;
+      score += s * w[gi] * tokenGroups[gi].weight;
+      if (!tokenGroups[gi].extra) tokensHit++;
+    });
     if (rawTokens.length > 1 && f.title.includes(fullPhrase)) score += 8;       // exact-phrase bonus
     if (rawTokens.length > 1 && f.body.includes(fullPhrase)) score += 3;
-    if (tokensHit === tokenGroups.length && tokenGroups.length > 1) score += 4; // all-tokens-present bonus
+    if (tokensHit === baseGroups && baseGroups > 1) score += 4;                 // all-tokens-present bonus
     return { n, score };
   }).filter(r => r.score > 0);
 
