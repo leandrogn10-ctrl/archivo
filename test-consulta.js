@@ -16,6 +16,7 @@ function load(html) {
     src.slice(at(/^const ASK_EXPAND_MODEL/), at(/^let askRosterCache/)).join('\n'),
     fn(/^function askMergeRanked/), fn(/^function askParseExpansion/), fn(/^function losText/), fn(/^function losFlatten/),
     'this.api = { searchNotesScored, askMergeRanked, askParseExpansion, losFlatten, W: ASK_EXPAND_WEIGHT, R: ASK_EXPAND_RESERVED };',
+    'this.subSrc = ' + JSON.stringify(fn(/^async function callClaudeSub/)) + ';',
   ].join('\n');
   const ctx = { corpus: null };
   vm.createContext(ctx); vm.runInContext(code, ctx);
@@ -57,6 +58,8 @@ function run(ctx) {
   const flat = F([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: [{ type: 'text', text: 'q2', cache_control: {} }] }]);
   ok(flat.includes('q2') && !flat.includes('[object Object]'), 'flatten: block content arrives as text');
   ok(typeof F([{ role: 'user', content: [{ type: 'text', text: 'solo' }] }]) === 'string', 'flatten: a one-turn block thread is a string');
+  // the Max path must ask for a tool-less run: fichas are data this app doesn't author (gap #1)
+  ok(/body: JSON\.stringify\(\{[^}]*tools: 'none'/.test(ctx.subSrc), 'tools: the Max-path body asks for tools:none');
   return fails;
 }
 
@@ -69,6 +72,7 @@ const PLANTS = [
   ['seat reservation removed', s => s.replace('b.slice(0, ASK_EXPAND_RESERVED).forEach(add);', ''), 'first seats'],
   ['IDF removed', s => s.replace('const w = idf.map(x => top > 0 ? x / top : 1);', 'const w = idf.map(() => 1);'), 'idf'],
   ['losText bypassed', s => s.replace("+ ': ' + losText(m.content)", "+ ': ' + m.content"), 'flatten'],
+  ['tools flag dropped', s => s.replace(", tools: 'none' })", ' })'), 'tools:none'],
   ['extra groups ignored', s => s.replace('for (const ph of extra) {', 'for (const ph of []) {'), 'org is reached'],
 ];
 let bad = 0;

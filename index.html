@@ -1618,7 +1618,9 @@ async function callClaudeSub({ system, messages, model, maxTokens, onDelta, sign
   try {
     res = await fetch(LOS_HELPER_URL + '/claude', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LOS-Token': tok || '' },
-      body: JSON.stringify({ system: system || '', prompt: losFlatten(messages), model: model || '', max_tokens: maxTokens }),
+      // tools:'none' — the prompt carries ficha text this app doesn't author (fuentes/, ajeno/, AI pieces);
+      // the helper's default agent can edit projects and fetch URLs, which an injected line could use
+      body: JSON.stringify({ system: system || '', prompt: losFlatten(messages), model: model || '', max_tokens: maxTokens, tools: 'none' }),
       signal: ac.signal,
     });
   } finally { clearTimeout(timer); }

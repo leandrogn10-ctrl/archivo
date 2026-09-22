@@ -2,7 +2,7 @@
 
 The **reading room** of LeandroOS's knowledge organ. Single-file C3 PWA (copied from
 `~/Projects/app-shell`, slots filled). Vision + design constraints:
-`~/Downloads/leandro-os/prototype/EL-ARCHIVO-PLAN.md` — read it before adding features.
+`~/Downloads/leandro-os-prototype/EL-ARCHIVO-PLAN.md` (the archivero's gap list: `ARCHIVERO-GAPS.md`, same folder) — read it before adding features.
 
 ## Architecture (hybrid storage — the one C3 deviation, deliberate)
 - **Corpus** = markdown notes in the **private repo `leandrogn10-ctrl/archivo-corpus`**
