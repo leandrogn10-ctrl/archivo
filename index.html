@@ -869,6 +869,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .stamp.st-caso     { color: var(--danger); }
 .stamp.st-oficio   { color: var(--gold); }
 .stamp.st-creativo { color: var(--accent-soft); }
+.stamp.st-postura  { color: var(--c-sage-fg); border-style: double; }   /* firmada: doble filete, como un sello de banca */
 .stamp.st-otro     { color: var(--ink-faint); }
 .stamp.st-ajeno    { color: var(--gold); border-style: dashed; transform: rotate(1.6deg); }
 .stamp.st-ia       { color: var(--ink-dim); border-style: dotted; transform: rotate(-1.4deg); }
@@ -1820,6 +1821,7 @@ const ASK_CORPUS_SYSTEM =
   "Read) over the WHOLE archive on disk, one folder per shelf: casos (debate cases and flows), cursos (course " +
   "notes), fuentes (sources he read), notas, oficios (craft and technique), personas (people in his life), " +
   "proyectos (applications, jobs, projects), ensayos, creativo, hitos (milestones), ajeno (other people's work), " +
+  "posturas (his SIGNED convictions — cite them verbatim, never infer or paraphrase a position he has not signed), " +
   "bandeja (not yet shelved), contexto (standing context about personas), textos (the FULL original documents " +
   "behind the fichas — very large; a ficha names its original in its `texto:` frontmatter).\n" +
   "- The numbered fichas above are a first keyword pass. When they answer the question, answer from them. Use " +
@@ -2784,7 +2786,7 @@ async function setSensitivity(note, newVal) {
    Same discipline as the candado: fresh GET for the sha, sha-guarded write, `veto:` commit
    message, then keep the local corpus + cache honest. Reject deletes the CARD only — the
    texto stays in the stacks and git history keeps even the card. */
-const SHELVES = ['notas', 'cursos', 'fuentes', 'casos', 'ensayos', 'oficios', 'proyectos', 'creativo', 'hitos'];
+const SHELVES = ['notas', 'cursos', 'fuentes', 'casos', 'ensayos', 'oficios', 'proyectos', 'creativo', 'hitos', 'posturas'];
 
 async function ghWrite(method, path, bodyObj) {
   const pat = state.settings.sync.githubPat;
@@ -3789,7 +3791,7 @@ function drawTethers(c,bob){
    es el mismo en el edificio, en la etiqueta de la fila y en la afinidad.
    Todos salen de PAL — la cantera no se rompe por querer color. */
 const HUE={casos:38,fuentes:35,notas:33,oficios:15,cursos:34,creativo:30,
-           proyectos:37,personas:32,hitos:16,ensayos:31,ajeno:20,
+           proyectos:37,personas:32,hitos:16,ensayos:31,ajeno:20,posturas:36,   // la banca: verde hondo, sin usar hasta hoy
            bandeja:17,auditoria:29,           // la bandeja es la que te espera: luz de lámpara
            clases:34,'sello-ajeno':20,todo:21};   // lentes: heredan tono, no edificio
 
@@ -4310,7 +4312,7 @@ document.getElementById('tray').addEventListener('click', () => {
    ══════════════════════════════════════════════════════════════════════ */
 const PAGE = 60;
 const LIST = { items: [], shown: PAGE, sel: 0, q: '', weak: [], showWeak: false };
-const PRIVADO = new Set(['creativo']);
+const PRIVADO = new Set(['creativo', 'posturas']);   // posturas: his signed convictions — never digested (La Plataforma)
 const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 
 function fichaProv(n) {
@@ -4457,7 +4459,7 @@ document.getElementById('app-root').addEventListener('click', e => {
 function openSlug(slug) { markRead(slug); view = { mode: 'note', drawer: view.drawer, slug, q: '' }; renderAll(); }
 
 /* ── the catalogue drawers (sidebar) ── */
-const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · obra huérfana', hitos: 'Hitos · milestones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría', 'sello-ajeno': 'Sello ajeno · otra pluma' };
+const FOLDER_LABELS = { bandeja: 'Bandeja · inbox', cursos: 'Cursos · classes', notas: 'Notas · ideas & fragments', fuentes: 'Fuentes · readings, cited', casos: 'Casos · debate cases', oficios: 'Oficios · craft & playbooks', ensayos: 'Ensayos · my essays', proyectos: 'Proyectos · pitches & artifacts', creativo: 'Creativo · creative writing', ajeno: 'Ajeno · obra huérfana', hitos: 'Hitos · milestones', posturas: 'Posturas · convicciones', personas: 'Personas · La Red', auditoria: 'Sala de auditoría', 'sello-ajeno': 'Sello ajeno · otra pluma' };
 // 'Ajeno · not mine' read as a provenance filter and was one — of a 15-note shelf, while 810
 // fichas wore the sello across every other drawer. The shelf keeps its real job (homeless
 // works); the lens below answers "not mine".
@@ -4467,12 +4469,12 @@ const TYPE_STAMP = {
   course: 'st-curso', concept: 'st-concepto', claim: 'st-claim', source: 'st-concepto',
   'debate-case': 'st-caso', craft: 'st-oficio', creative: 'st-creativo', project: 'st-concepto',
   milestone: 'st-claim', flow: 'st-caso', coaching: 'st-oficio', fragment: 'st-otro',
-  persona: 'st-concepto'
+  persona: 'st-concepto', postura: 'st-postura'
 };
 const TYPE_ES = {
   course: 'curso', concept: 'concepto', claim: 'claim', source: 'fuente', 'debate-case': 'caso',
   craft: 'oficio', creative: 'creativo', project: 'proyecto', milestone: 'hito', flow: 'flow',
-  coaching: 'coaching', fragment: 'fragmento', persona: 'persona'
+  coaching: 'coaching', fragment: 'fragmento', persona: 'persona', postura: 'postura'
 };
 
 /* The sello lens: provenance is orthogonal to folder (corpus README), so "not my pluma" can
