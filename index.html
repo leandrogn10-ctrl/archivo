@@ -5458,13 +5458,25 @@ document.getElementById('app-root').addEventListener('wheel', folioScrollStop, {
    otro» en su lugar (el texto completo) sería el fallback silencioso de
    siempre: dos salidas distintas que desde fuera se ven iguales. */
 function abrirEnPestaña(url) { const w = window.open(url, '_blank'); if (w) w.opener = null; }
+/* La ÚNICA puerta de «¿hay enlace al original?» — la tecla, la placa y la barra de
+   teclas la comparten. `fuente_caducada` la escribió el barrido del 25-sep: URLs de
+   descarga FIRMADAS guardadas sin su firma (Canvas CDN, S3, espejos) — 401 para siempre. */
+function enlaceOriginal(n) {
+  const src = n.fm.source ? String(n.fm.source) : '';
+  return /^https?:/.test(src) && n.fm.fuente_caducada !== true ? src : '';
+}
 function abrirDocumento(n) {
   const src = n.fm.source ? String(n.fm.source) : '';
-  if (/^https?:/.test(src)) { abrirEnPestaña(src); return; }
-  if (/^descarga:/i.test(src)) { toast(`el original es un fichero del disco: ${src.replace(/^descarga:/i, '')}`); return; }
-  if (src) { toast(`la fuente de esta ficha no es un enlace: «${src}»`); return; }
-  toast(n.fm.texto ? 'esta ficha no cita documento original — «t» abre el texto completo.'
-                   : 'esta ficha no cita ningún documento original.');
+  const url = enlaceOriginal(n);
+  if (url) { abrirEnPestaña(url); return; }
+  /* Sin enlace, `d` abre lo que guarda la bodega (Leandro, 25-sep: «d» tiene que
+     funcionar SIEMPRE) — pero lo DICE: el fallback nunca es silencioso. */
+  const porque = n.fm.fuente_caducada === true ? `el enlace de descarga caducó (${src.replace(/^https?:\/\/([^/]+).*/, '$1')})`
+               : /^descarga:/i.test(src) ? `el original es un fichero del disco (${src.replace(/^descarga:/i, '')})`
+               : src ? `la fuente no es un enlace («${src}»)`
+               : 'esta ficha no cita documento original';
+  if (n.fm.texto) { toast(`${porque} — abro el texto guardado.`); abrirTexto(n); return; }
+  toast(`${porque}, y la bodega no guarda su texto.`);
 }
 function abrirTexto(n) {
   if (!n.fm.texto) { toast('esta ficha no guarda texto completo en la bodega.'); return; }
@@ -5863,7 +5875,7 @@ function renderView() {
         ${n.fm.provenance ? `<span class="plate-item">pluma <b>${escapeHtml(String(n.fm.provenance))}</b></span>` : ''}
         ${n.fm.verified === true ? `<span class="plate-item" style="color:var(--c-sage-fg)">✓ verificado</span>` : ''}
         <button class="plate-sens" id="sens-toggle" title="click para cambiar la sensibilidad (escribe al repo)">${n.fm.sensitivity === 'private' ? '🔒 privado' : '🔓 normal'}</button>
-        ${n.fm.source && /^https?:/.test(String(n.fm.source)) ? `<a href="${escapeHtml(String(n.fm.source))}" target="_blank" rel="noopener">documento original <kbd>d</kbd> ↗</a>` : ''}
+        ${enlaceOriginal(n) ? `<a href="${escapeHtml(enlaceOriginal(n))}" target="_blank" rel="noopener">documento original <kbd>d</kbd> ↗</a>` : ''}
         ${n.fm.texto ? `<a href="https://github.com/${escapeHtml(state.corpus.repo)}/blob/${escapeHtml(state.corpus.branch)}/${escapeHtml(String(n.fm.texto))}" target="_blank" rel="noopener">texto completo <kbd>t</kbd> ↗</a>` : ''}
       </div>
       <div class="folio-body">${mdRender(n.body)}</div>
@@ -5900,7 +5912,7 @@ function renderView() {
     if (ancho > 0 && ancho <= 760) return;
     document.getElementById('pkeys').innerHTML = [
       '<kbd>k</kbd> baja', '<kbd>j</kbd> sube', '<kbd>espacio</kbd> página', '<kbd>g</kbd>/<kbd>G</kbd> extremos',
-      ...(/^https?:/.test(String(n.fm.source || '')) ? ['<kbd>d</kbd> documento original'] : []),
+      ...(enlaceOriginal(n) ? ['<kbd>d</kbd> documento original'] : []),
       ...(n.fm.texto ? ['<kbd>t</kbd> texto completo'] : []),
       ...((nb.prev || nb.next) ? ['<kbd>n</kbd>/<kbd>p</kbd> ficha del cajón'] : []),
       '<kbd>esc</kbd> al catálogo',
