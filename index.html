@@ -690,6 +690,15 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
 .form-grid input[type="date"] { background: var(--paper); border: 1px solid var(--line); border-radius: 2px; padding: 9px 11px; font: inherit; font-size: 13px; color: inherit; color-scheme: dark; }
 .form-grid input[type="date"]:focus { border-color: var(--accent); outline: none; }
+/* la ronda — the postura's folio grows a bench: tickets that brought him here, his own cases against, three verbs */
+.ronda { margin-top: 26px; }
+.ronda-plate { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.04em; margin: 4px 0 12px; }
+.ronda-plate b { color: var(--ink-dim); font-weight: 600; }
+.ronda-ticket { border-left: 2px solid var(--sello); padding: 10px 14px; margin: 10px 0 16px; background: color-mix(in srgb, var(--sello) 7%, transparent); border-radius: 0 3px 3px 0; }
+.ronda-ticket .lbl { color: var(--sello-ink); }
+.ronda .row, #pt-opp .row { cursor: pointer; }
+#pt-opp { margin-top: 8px; }
+#panolbl i.warn { color: var(--sello-ink); opacity: 1; }   /* street label and hover pill alike */
 .prompt-modal input:focus { border-color: var(--accent); }
 .prompt-modal .actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 
@@ -1188,6 +1197,7 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
         <label class="span-2">La razón, si no hay ficha (se guarda como nota y la postura la cita)<textarea id="pt-razon" rows="2"></textarea></label>
         <label class="span-2">La postura, en tu voz<textarea id="pt-body" rows="6"></textarea></label>
         <label class="span-2">En contra — lo más fuerte que yo mismo he dicho (opcional; cita [[caso-slug]])<textarea id="pt-contra" rows="3"></textarea></label>
+        <div class="span-2"><button type="button" class="btn" id="pt-find-opp">buscar en contra en mis casos</button><div id="pt-opp"></div></div>
       </div>
       <div class="actions"><button type="button" class="btn" data-close="postura">cancelar</button><button type="button" class="btn pri" id="pt-save">firmar hoy</button></div>
     </div>
@@ -3062,6 +3072,7 @@ const remoteOps = { promote: promoteRemote, redo: redoRemote, ajeno: provenanceR
   // La Plataforma: a hand-signed postura (and its razón note) and a simulated sala ticket are plain
   // file creates — the optimistic note is already in the bodega, this is the commit behind it
   posturaWrite: (path, content, message) => ghWrite('PUT', path, { message, content: utf8ToB64(content) }),
+  posturaUpdate: (...a) => posturaUpdateRemote(...a),
   salaPlant: (path, content, message) => ghWrite('PUT', path, { message, content: utf8ToB64(content) }) };
 
 function applyRevertRecord(rec) {
@@ -3071,6 +3082,12 @@ function applyRevertRecord(rec) {
     // a create that failed remotely: the optimistic note must leave the bodega again
     const i = corpus.notes.findIndex(n => n.path === rd.path);
     if (i >= 0) corpus.notes.splice(i, 1);
+    return;
+  }
+  if (kind === 'posturaUpdate') {
+    // a round that failed remotely: the postura goes back to what it said before the verb
+    const t = corpus.notes.find(n => n.path === rd.path);
+    if (t && rd.prev) { t.fm = rd.prev.fm; t.body = rd.prev.body; delete t._sf; }
     return;
   }
   if (kind === 'reject') {
@@ -3333,8 +3350,8 @@ function buildSimTicket(p, kind) {
                kind, target: p.slug, target_path: p.path, severity: kind === 'contradiccion' ? 'S2' : 'S3', remedio: 'nota',
                remedio_arg: `simulacro-${stamp}`, hint: `/postura ${p.slug}`, huella, status: 'abierta', date: today, simulado: true };
   const body = kind === 'contradiccion'
-    ? `SIMULACRO. This is what a contradicción ticket looks like when a new ficha of yours argues against [[${p.slug}]].\n\n> (the auditor quotes the contradicting sentence here, verbatim, in the ficha's own language)\n\nRun \`/postura ${p.slug}\` — sign, revise or abandon. Resolving (a) deletes this ticket; dismissing (x) writes a throwaway huella.`
-    : `SIMULACRO. This is what a sin-tocar ticket looks like: [[${p.slug}]] signed more than a year ago, and something new landed in its tags since.\n\nNot a contradiction — a reminder. Run \`/postura ${p.slug}\`; re-signing as is closes it.`;
+    ? `SIMULACRO. Así se ve una contradicción: una ficha nueva tuya argumenta contra [[${p.slug}]].\n\n> (aquí el auditor cita, textual, la frase que contradice)\n\nAbre la postura: la ronda está en su folio. Firmar, revisar o abandonar resuelve este hallazgo; desestimarlo (x) escribe una huella desechable.`
+    : `SIMULACRO. Así se ve un sin-tocar: [[${p.slug}]] lleva más de un año firmada y algo nuevo cayó en su territorio.\n\nNo es una contradicción, es un recordatorio. Abre la postura: firmarla tal cual, desde su folio, cierra esto.`;
   const slug = `hz-${kind}-${p.slug}`.replace(/[^\w-]+/g, '-').slice(0, 70) + `-${huella}`;
   return { path: `auditoria/${slug}.md`, slug, content: ptFm(fm) + body + '\n', message: `sala: simulacro ${kind} sobre ${p.slug}` };
 }
@@ -3358,32 +3375,148 @@ function openAdmin() {
     : '<option value="">(sin posturas vivas en la bodega — ⟳)</option>';
   document.getElementById('admin-modal').showModal();
 }
-function openComposer() {
-  document.getElementById('pt-slugs').innerHTML = (corpus ? corpus.notes : [])
+/* ── la ronda: the whole round happens in the folio, never in a terminal ── */
+const PT_KINDS = new Set(['contradiccion', 'sin-tocar']);
+function ptTickets(slug) {
+  return corpus ? corpus.notes.filter(t => t.folder === 'auditoria' && PT_KINDS.has(String(t.fm.kind)) && String(t.fm.target) === slug) : [];
+}
+function ptPending() { return corpus ? corpus.notes.filter(n => n.folder === 'posturas' && ptTickets(n.slug).length) : []; }
+function ptSplitBody(body) {
+  const parts = String(body || '').split(/\n## En contra[^\n]*\n/);
+  return { body: parts[0].trim(), contra: (parts[1] || '').trim() };
+}
+function ptOpposition(fmLike, body, limit = 8) {
+  // his own cases only, found by the room's search on the motion's words + its tags; a
+  // case the postura already cites is not offered again
+  if (!corpus) return [];
+  const q = String(fmLike.title || '').replace(/^this house (believes|would|regrets|prefers|supports)/i, '');
+  const tags = Array.isArray(fmLike.tags) ? fmLike.tags : [];
+  const cited = new Set([...String(body || '').matchAll(/\[\[([^\]|#]+)/g)].map(m => m[1].trim()));
+  return searchNotesScored(q, tags, 1.5).map(r => r.n).filter(c => c.folder === 'casos' && !cited.has(c.slug)).slice(0, limit);
+}
+function ptSerialize(n) { return ptFm(n.fm) + '\n' + String(n.body).trim() + '\n'; }
+async function posturaUpdateRemote(path, content, message) {
+  const j = await ghGetOr404(path);
+  await ghWrite('PUT', path, { message, content: utf8ToB64(content), ...(j ? { sha: j.sha } : {}) });
+}
+function signPostura(n, changes, verb) {
+  // every verb signs today; a ticket that brought him here is resolved by the verb itself
+  const prev = { fm: { ...n.fm }, body: n.body };
+  if (changes.title) n.fm.title = String(changes.title).trim();
+  if (changes.estado) n.fm.estado = changes.estado;
+  if (changes.sensitivity) n.fm.sensitivity = changes.sensitivity;
+  if (Array.isArray(changes.tags) && changes.tags.length) n.fm.tags = changes.tags;
+  if (changes.motivo) n.fm.motivo = `[[${String(changes.motivo).replace(/^\[\[|\]\]$/g, '')}]]`;
+  n.fm.firmado = ptToday();
+  if (changes.body != null || changes.contra != null) {
+    const cur = ptSplitBody(n.body);
+    const body = changes.body != null ? String(changes.body).trim() : cur.body;
+    const contra = changes.contra != null ? String(changes.contra).trim() : cur.contra;
+    n.body = `${body}\n\n## En contra — lo más fuerte que yo mismo he dicho\n${contra}`;
+  }
+  delete n._sf;
+  saveCorpusCache();
+  enqueueVeto(`postura ${verb} ${n.slug}`, 'posturaUpdate', [n.path, ptSerialize(n), `postura: ${n.slug} — ${verb} (desde El Archivo)`], { path: n.path, prev });
+  for (const t of ptTickets(n.slug)) salaVerdict('aceptar', t);
+}
+function oppRowsHtml(opp) {
+  return opp.length
+    ? opp.map(c => `<div class="row" data-open="${escapeHtml(c.slug)}" data-opp="${escapeHtml(c.slug)}" style="--h:${PANO.hue('casos')};--hi:${PANO.ink('casos')}">
+        <div class="rtop"><h3>${escapeHtml(c.fm.title || c.slug)}</h3><span class="end"><time>${escapeHtml(String(c.fm.date || '').slice(0, 4))}</time></span></div>
+        <div class="rsub">${escapeHtml(excerptOf(c, ''))}</div></div>`).join('')
+    : '<div class="rsub">el corpus no guarda ningún caso contra esta moción — eso también es un hallazgo.</div>';
+}
+function rondaHtml(n) {
+  const tickets = ptTickets(n.slug), opp = ptOpposition(n.fm, n.body);
+  return `<section class="ronda">
+    <div class="grouphead"><span class="lbl">La ronda</span><hr></div>
+    <div class="ronda-plate">estado <b>${escapeHtml(String(n.fm.estado || '?'))}</b> · desde <b>${escapeHtml(String(n.fm.desde || ''))}</b> · firmada <b>${escapeHtml(String(n.fm.firmado || ''))}</b>${n.fm.motivo ? ` · motivo ${mdInline(escapeHtml(String(n.fm.motivo)))}` : ''}</div>
+    ${tickets.map(t => `<div class="ronda-ticket"><div class="lbl">☗ ${escapeHtml(String(t.fm.kind))} · en la sala desde ${escapeHtml(String(t.fm.date || ''))}</div>
+      <div class="folio-body">${mdRender(String(t.body))}</div><div class="rsub">firmar, revisar o abandonar resuelve este hallazgo.</div></div>`).join('')}
+    <div class="lbl" style="margin-top:14px">En contra — de tus propios casos (${opp.length})</div>
+    ${oppRowsHtml(opp)}
+    <div class="actions"><button type="button" class="btn dan" id="rd-abandonar">abandonar</button><button type="button" class="btn" id="rd-revisar">revisar</button><button type="button" class="btn pri" id="rd-firmar">firmar hoy</button></div>
+  </section>`;
+}
+function wireRonda(n) {
+  const b = id => document.getElementById(id);
+  b('rd-firmar').addEventListener('click', () => { signPostura(n, {}, n.fm.estado === 'abandonada' ? 'firmada' : 'firmada'); toast(`✍ ${n.slug} — firmada hoy`); renderAll(); });
+  b('rd-revisar').addEventListener('click', () => openComposer(n));
+  b('rd-abandonar').addEventListener('click', async () => {
+    const m = await askPrompt('abandonar — ¿qué la movió?', 'Slug de la ficha que la tumbó (una lectura, un hito, un caso). Sin motivo no hay abandono.', String(n.fm.motivo || '').replace(/^\[\[|\]\]$/g, ''));
+    if (!m) return;
+    if (!noteBySlug(m)) { toast(`no hay ficha con slug “${m}”`, true); return; }
+    signPostura(n, { estado: 'abandonada', motivo: m }, 'abandonada'); toast(`✝ ${n.slug} — abandonada`); renderAll();
+  });
+}
+function openComposer(edit) {
+  const g = id => document.getElementById(id);
+  g('pt-slugs').innerHTML = (corpus ? corpus.notes : [])
     .filter(n => !['auditoria', 'contexto', 'bandeja'].includes(n.folder)).map(n => `<option value="${escapeHtml(n.slug)}">`).join('');
-  document.getElementById('pt-desde').value = ptToday();
-  document.getElementById('postura-modal').showModal();
-  setTimeout(() => document.getElementById('pt-title').focus(), 30);
+  const modal = g('postura-modal');
+  modal.dataset.edit = edit ? edit.slug : '';
+  modal.querySelector('header h2').textContent = edit ? 'Revisar postura' : 'Nueva postura';
+  g('pt-save').textContent = edit ? 'firmar la revisión' : 'firmar hoy';
+  g('pt-razon').closest('label').style.display = edit ? 'none' : '';
+  if (edit) {
+    const cur = ptSplitBody(edit.body);
+    g('pt-title').value = String(edit.fm.title || ''); g('pt-estado').value = String(edit.fm.estado || 'sostengo');
+    g('pt-desde').value = String(edit.fm.desde || ptToday()); g('pt-tags').value = (Array.isArray(edit.fm.tags) ? edit.fm.tags : []).join(', ');
+    g('pt-sens').value = String(edit.fm.sensitivity || 'normal'); g('pt-motivo').value = String(edit.fm.motivo || '').replace(/^\[\[|\]\]$/g, '');
+    g('pt-body').value = cur.body; g('pt-contra').value = cur.contra;
+  } else {
+    ['pt-title', 'pt-tags', 'pt-motivo', 'pt-razon', 'pt-body', 'pt-contra'].forEach(id => { g(id).value = ''; });
+    g('pt-estado').value = 'sostengo'; g('pt-sens').value = 'normal'; g('pt-desde').value = ptToday();
+  }
+  g('pt-opp').innerHTML = '';
+  modal.showModal();
+  setTimeout(() => g('pt-title').focus(), 30);
+}
+function findOppForComposer() {
+  const g = id => document.getElementById(id).value;
+  const fmLike = { title: g('pt-title'), tags: g('pt-tags').split(',').map(s => s.trim().toLowerCase()).filter(Boolean) };
+  if (!fmLike.title.trim() && !fmLike.tags.length) { toast('escribe la moción o un tag primero', true); return; }
+  const opp = ptOpposition(fmLike, g('pt-contra'));
+  const box = document.getElementById('pt-opp');
+  box.innerHTML = `<div class="lbl">${opp.length} caso${opp.length === 1 ? '' : 's'} — pulsa uno para citarlo</div>` + oppRowsHtml(opp);
+  box.querySelectorAll('[data-opp]').forEach(row => row.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    const c = noteBySlug(row.dataset.opp); if (!c) return;
+    const ta = document.getElementById('pt-contra');
+    ta.value = (ta.value.trim() ? ta.value.trimEnd() + '\n' : '') + `- [[${c.slug}]] — `;
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  }));
 }
 function submitPostura() {
   const g = id => document.getElementById(id).value;
+  const modal = document.getElementById('postura-modal');
   const f = { title: g('pt-title').trim(), estado: g('pt-estado'), desde: g('pt-desde'), sensitivity: g('pt-sens'), motivo: g('pt-motivo'),
               razon: g('pt-razon'), body: g('pt-body'), contra: g('pt-contra'),
               tags: g('pt-tags').split(',').map(s => s.trim().toLowerCase()).filter(Boolean) };
   if (!f.title) { toast('la moción es el título — escríbela', true); return; }
   if (!f.body.trim()) { toast('el cuerpo es tu voz — sin él no hay postura', true); return; }
   if (!f.tags.length) { toast('al menos un tag — así la encuentra el auditor', true); return; }
+  if (!corpus) { toast('trae la bodega primero — ⟳', true); return; }
   const mslug = f.motivo.trim().replace(/^\[\[|\]\]$/g, '');
-  if (mslug && corpus && !corpus.notes.some(n => n.slug === mslug)) { toast(`no hay ficha con slug “${mslug}” — elige una de la lista, o déjalo vacío y escribe la razón`, true); return; }
+  if (mslug && !corpus.notes.some(n => n.slug === mslug)) { toast(`no hay ficha con slug “${mslug}” — elige una de la lista, o déjalo vacío y escribe la razón`, true); return; }
+  const editSlug = modal.dataset.edit;
+  if (editSlug) {
+    const n = noteBySlug(editSlug);
+    if (!n) { toast('la postura ya no está en la bodega — ⟳', true); return; }
+    if (!mslug) { toast('una revisión necesita su motivo — la ficha que la movió', true); return; }
+    signPostura(n, { title: f.title, estado: f.estado, sensitivity: f.sensitivity, tags: f.tags, motivo: mslug, body: f.body, contra: f.contra }, 'revisada');
+    modal.close(); modal.dataset.edit = '';
+    view = { mode: 'note', drawer: 'posturas', slug: n.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 });
+    toast(`✍ ${n.slug} — revisada y firmada hoy`);
+    return;
+  }
   let built;
   try { built = buildPosturaFiles(f); } catch (e) { toast(e.message, true); return; }
-  if (!corpus) { toast('trae la bodega primero — ⟳', true); return; }
   for (const file of built.files) {
     ptAddNote(file.path, file.content);
     enqueueVeto(`postura ${built.slug}`, 'posturaWrite', [file.path, file.content, file.message], { path: file.path });
   }
-  document.getElementById('postura-modal').close();
-  ['pt-title', 'pt-tags', 'pt-motivo', 'pt-razon', 'pt-body', 'pt-contra'].forEach(id => { document.getElementById(id).value = ''; });
+  modal.close();
   view = { mode: 'note', drawer: 'posturas', slug: built.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 });
   toast(`✍ firmada — ${built.slug} (${built.files.length} archivo${built.files.length > 1 ? 's' : ''} en cola)`);
 }
@@ -3392,7 +3525,8 @@ document.getElementById('admin-plant-contra').addEventListener('click', () => pl
 document.getElementById('admin-plant-stale').addEventListener('click', () => plantTicket('sin-tocar'));
 document.getElementById('admin-new-postura').addEventListener('click', () => { document.getElementById('admin-modal').close(); openComposer(); });
 document.getElementById('pt-save').addEventListener('click', submitPostura);
-window.plataformaDev = { buildPosturaFiles, buildSimTicket, ptSlug, openComposer, openAdmin };
+document.getElementById('pt-find-opp').addEventListener('click', findOppForComposer);
+window.plataformaDev = { buildPosturaFiles, buildSimTicket, ptSlug, openComposer, openAdmin, ptOpposition, ptSplitBody, ptSerialize };
 
 async function salaContextoRemote(findingPath, findingSlug, hintText) {
   const j = await ghGetOr404(findingPath);
@@ -4297,8 +4431,9 @@ function pillFor(k){
   const t=TWR.find(x=>x.k===k), b=BLD.find(x=>x.k===k);
   const o=t||b; if(!o) return '';
   const nm=t?LABEL(k):k, n=t?LENSES[k]:o.n;
+  const warn = k === 'posturas' ? ptPending().length : 0;   // La Plataforma: the sala is holding something against him
   return `<span class="plpill${t?' lens':''}" style="left:${(o.x+o.w/2)*U}px;--h:${inkOf(k)}">
-    ${t?'◈ ':''}${escapeHtml(nm)}<i>${fmtN(n)}</i></span>`;
+    ${t?'◈ ':''}${escapeHtml(nm)}<i>${fmtN(n)}</i>${warn ? `<i class="warn">⚠ ${warn}</i>` : ''}</span>`;
 }
 function labelPano(){
   const box=document.getElementById('panolbl');
@@ -4310,7 +4445,7 @@ function labelPano(){
   const activeKey=TWR.some(t=>t.k===act)||act.startsWith('clase:')?(act.startsWith('clase:')?'clases':act):null;
   const draw=(withN)=>BLD.map(b=>
     `<span class="pl${S.drawer===b.k?' on':''}" style="width:${b.w*U}px;margin-left:${b===BLD[0]?b.x*U:2*U}px;--h:${P(b.hue)}">
-       ${b.k}${withN?`<i>${fmtN(b.n)}</i>`:''}</span>`).join('');
+       ${b.k}${withN?`<i>${fmtN(b.n)}</i>`:''}${b.k==='posturas'&&ptPending().length?`<i class="warn">⚠ ${ptPending().length}</i>`:''}</span>`).join('');
   /* La pastilla es tan ancha como la manzana entera de las lentes, así que
      dejarla fija tapaba las tres torres justo mientras nombraba una. Con
      los rótulos de cajón a la vista sólo hace falta al SEÑALAR — el nombre
@@ -4513,6 +4648,8 @@ function fichaRow(n, i, q, sel) {
       <h3>${q ? markHits(n.fm.title || n.slug, q) : escapeHtml(n.fm.title || n.slug)}</h3>
       <span class="end">
         <span class="sello${pv ? ' ' + pv.cls : ''}">${escapeHtml(TYPE_ES[type] || type)}</span>
+        ${n.folder === 'posturas' && ptTickets(n.slug).length ? `<span class="sello rojo" title="hay un hallazgo en la sala sobre esta postura">en la sala</span>` : ''}
+        ${n.folder === 'posturas' && n.fm.estado && n.fm.estado !== 'sostengo' ? `<span class="sello">${escapeHtml(String(n.fm.estado))}</span>` : ''}
         ${year ? `<time>${escapeHtml(year)}</time>` : ''}
       </span>
     </div>
@@ -4670,6 +4807,8 @@ function notesFor(drawer) {
   if (!corpus) return [];
   if (drawer === 'todo') return corpus.notes.filter(esCatalogo);
   if (drawer === SELLO_DRAWER) return corpus.notes.filter(n => esCatalogo(n) && n.fm.provenance === 'external');
+  if (drawer === 'posturas')   // La Plataforma: what the sala is holding against him comes first, then the drawer as filed
+    return corpus.notes.filter(n => n.folder === 'posturas').sort((a, b) => (ptTickets(b.slug).length > 0) - (ptTickets(a.slug).length > 0));
   return corpus.notes.filter(n => n.folder && n.folder === drawer);
 }
 
@@ -5561,7 +5700,12 @@ function renderHoy(root) {
     .map(f => ({ f, n: corpus.notes.filter(x => x.folder === f).length,
                  t: Math.max(...corpus.notes.filter(x => x.folder === f).map(x => Date.parse(String(x.fm.date || 0)) || 0)) }))
     .sort((a, b) => b.t - a.t).slice(0, 4);
-  root.innerHTML = r.map((x, i) => fichaRow(x.n, i, '', i === LIST.sel).replace(
+  const pend = ptPending();   // La Plataforma: the sala is holding a postura of his — Hoy says so before anything else
+  root.innerHTML = (pend.length ? `<div class="row drawer" data-drawer="posturas" style="--h:${PANO.hue('posturas')};--hi:${PANO.ink('posturas')}">
+        <div class="rtop"><h3>⚠ ${pend.length} postura${pend.length === 1 ? '' : 's'} en la sala</h3><time>${escapeHtml(ptToday())}</time></div>
+        <div class="rsub">${escapeHtml(pend.map(p => String(p.fm.title || p.slug)).join(' · ').slice(0, 220))}</div>
+        <div class="rwhy">El auditor levantó algo contra ${pend.length === 1 ? 'esta' : 'estas'}: abre la postura y la ronda está en su folio.</div></div>` : '')
+    + r.map((x, i) => fichaRow(x.n, i, '', i === LIST.sel).replace(
       '<div class="rfoot">', (x.why ? `<div class="rwhy">${escapeHtml(x.why)}</div>` : '') + '<div class="rfoot">')).join('')
     + `<div class="grouphead"><span class="lbl">Cajones recientes</span><hr></div>`
     + recientes.map(d => `<div class="row drawer" data-drawer="${escapeHtml(d.f)}"
@@ -6060,6 +6204,7 @@ function renderView() {
       </div>
       <div class="folio-body">${mdRender(n.body)}</div>
       ${n.folder === 'personas' ? dossierHtml(n) : ''}
+      ${n.folder === 'posturas' ? rondaHtml(n) : ''}
       <div style="margin-top:18px">${tags}</div>
       ${junctionHtml(n)}
     </div>`;
@@ -6076,6 +6221,7 @@ function renderView() {
       catch (e) { console.error('sensitivity', e); toast('no se pudo escribir: ' + e.message, true); sensBtn.classList.remove('busy'); }
     });
     wireOpeners(root);
+    if (n.folder === 'posturas') wireRonda(n);
     /* La barra ES la documentación, así que promete POR FICHA: `d` sólo
        aparece si esta ficha cita un enlace de verdad, y `t` sólo si guarda
        texto. Una barra fija anunciaría dos puertas que en la mitad del archivo
