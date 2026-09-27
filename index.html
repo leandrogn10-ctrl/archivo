@@ -684,6 +684,12 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
 .prompt-modal h2 { font-size: 22px; font-style: italic; margin-bottom: 6px; }
 .prompt-modal p { color: var(--ink-dim); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
 .prompt-modal input { width: 100%; background: var(--paper); border: 1px solid var(--line); border-radius: 2px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px; }
+/* ── LA MESA (La Plataforma): the room's admin door, bottom-right like the city's, furniture-quiet ── */
+#admin-toggle { position: fixed; right: 20px; bottom: 20px; z-index: 60; background: color-mix(in srgb, var(--bg-elev) 88%, transparent); border: 1px solid var(--line); border-radius: 2px; padding: 6px 12px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-faint); cursor: pointer; backdrop-filter: blur(12px); transition: all .15s; }
+#admin-toggle:hover { color: var(--brass-2); border-color: var(--brass); }
+.modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+.form-grid input[type="date"] { background: var(--paper); border: 1px solid var(--line); border-radius: 2px; padding: 9px 11px; font: inherit; font-size: 13px; color: inherit; color-scheme: dark; }
+.form-grid input[type="date"]:focus { border-color: var(--accent); outline: none; }
 .prompt-modal input:focus { border-color: var(--accent); }
 .prompt-modal .actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 
@@ -1141,6 +1147,49 @@ dialog::backdrop { background: rgba(8, 12, 8, 0.78); backdrop-filter: blur(4px);
     <div class="actions">
       <button type="button" class="btn-secondary" data-close="prompt">cancel</button>
       <button type="button" class="btn-primary" id="prompt-ok">save</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- LA MESA — La Plataforma's two doors inside the room: plant a SIMULATED ticket to watch the
+     round arrive, and sign a postura by hand. Writes go through the same optimistic veto queue. -->
+<button id="admin-toggle" type="button" title="la mesa de pruebas — La Plataforma">⚙ mesa</button>
+<dialog id="admin-modal">
+  <div class="modal">
+    <header><div><h2>La mesa</h2><p>pruebas · La Plataforma</p></div><button type="button" class="close" data-close="admin">×</button></header>
+    <div class="modal-body">
+      <div class="settings-section">
+        <h3>Simular un hallazgo</h3>
+        <div class="desc">Planta en la sala un ticket con la forma exacta que el auditor emite de noche, marcado <code>simulado</code> — su huella nunca choca con una real. Resuélvelo con <kbd>a</kbd> o desestímalo con <kbd>x</kbd> como cualquier otro.</div>
+        <div class="form-grid">
+          <label class="span-2">Postura<select id="admin-postura"></select></label>
+        </div>
+        <div class="actions"><button type="button" class="btn" id="admin-plant-stale">plantar sin-tocar</button><button type="button" class="btn pri" id="admin-plant-contra">plantar contradicción</button></div>
+      </div>
+      <div class="settings-section">
+        <h3>Nueva postura</h3>
+        <div class="desc">Firmar una convicción a mano, desde aquí. Se escribe en <code>posturas/</code> con <code>firmado: hoy</code>; si no nombra una fuente, la razón se guarda como nota y la postura la cita.</div>
+        <div class="actions"><button type="button" class="btn pri" id="admin-new-postura">✍ nueva postura</button></div>
+      </div>
+    </div>
+  </div>
+</dialog>
+<dialog id="postura-modal">
+  <div class="modal wide">
+    <header><div><h2>Nueva postura</h2><p>This House believes…</p></div><button type="button" class="close" data-close="postura">×</button></header>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label class="span-2">Moción (título)<input type="text" id="pt-title" placeholder="This House believes …" autocomplete="off"></label>
+        <label>Estado<select id="pt-estado"><option>sostengo</option><option>en-duda</option><option>abandonada</option></select></label>
+        <label>Desde<input type="date" id="pt-desde"></label>
+        <label>Tags (coma)<input type="text" id="pt-tags" placeholder="democracia, peru" autocomplete="off"></label>
+        <label>Sensibilidad<select id="pt-sens"><option>normal</option><option>private</option></select></label>
+        <label class="span-2">Motivo — slug de la ficha que la sostiene (vacío = escribe la razón abajo)<input type="text" id="pt-motivo" list="pt-slugs" placeholder="slug-de-la-ficha-fuente" autocomplete="off"><datalist id="pt-slugs"></datalist></label>
+        <label class="span-2">La razón, si no hay ficha (se guarda como nota y la postura la cita)<textarea id="pt-razon" rows="2"></textarea></label>
+        <label class="span-2">La postura, en tu voz<textarea id="pt-body" rows="6"></textarea></label>
+        <label class="span-2">En contra — lo más fuerte que yo mismo he dicho (opcional; cita [[caso-slug]])<textarea id="pt-contra" rows="3"></textarea></label>
+      </div>
+      <div class="actions"><button type="button" class="btn" data-close="postura">cancelar</button><button type="button" class="btn pri" id="pt-save">firmar hoy</button></div>
     </div>
   </div>
 </dialog>
@@ -2430,6 +2479,8 @@ document.querySelectorAll('[data-close]').forEach(b => {
     const which = b.dataset.close;
     if (which === 'settings') settingsModal.close();
     if (which === 'prompt') { if (promptResolve) promptResolve(null); promptModal.close(); }
+    if (which === 'admin') document.getElementById('admin-modal').close();
+    if (which === 'postura') document.getElementById('postura-modal').close();
   });
 });
 document.addEventListener('keydown', e => {
@@ -3007,11 +3058,21 @@ function stripFmLines(content, keys) {
    doesn't drop the write silently — flushOrphanedVetoQueue replays it on next boot. */
 const remoteOps = { promote: promoteRemote, redo: redoRemote, ajeno: provenanceRemote, reject: rejectRemote,
   salaResolve: (...a) => salaResolveRemote(...a), salaDismiss: (...a) => salaDismissRemote(...a),
-  salaContexto: (...a) => salaContextoRemote(...a), salaExpediente: (...a) => salaExpedienteRemote(...a) };
+  salaContexto: (...a) => salaContextoRemote(...a), salaExpediente: (...a) => salaExpedienteRemote(...a),
+  // La Plataforma: a hand-signed postura (and its razón note) and a simulated sala ticket are plain
+  // file creates — the optimistic note is already in the bodega, this is the commit behind it
+  posturaWrite: (path, content, message) => ghWrite('PUT', path, { message, content: utf8ToB64(content) }),
+  salaPlant: (path, content, message) => ghWrite('PUT', path, { message, content: utf8ToB64(content) }) };
 
 function applyRevertRecord(rec) {
   const { kind, revertData: rd } = rec;
   if (!rd || !corpus) return;
+  if (kind === 'posturaWrite' || kind === 'salaPlant') {
+    // a create that failed remotely: the optimistic note must leave the bodega again
+    const i = corpus.notes.findIndex(n => n.path === rd.path);
+    if (i >= 0) corpus.notes.splice(i, 1);
+    return;
+  }
   if (kind === 'reject') {
     if (rd.snapshot && !corpus.notes.some(n => n.path === rd.snapshot.path)) corpus.notes.push(rd.snapshot);
     return;
@@ -3216,6 +3277,123 @@ async function salaDismissRemote(findingPath, findingSlug, huella) {
   }
   await salaDeleteFinding(findingPath, `desestimado ${findingSlug}`);
 }
+/* ── LA MESA — La Plataforma inside the room ──
+   Two doors the /postura skill has and the ROOM did not: plant a SIMULATED ticket to watch a
+   round arrive (its huella is a stamp, so it can never suppress a real one when dismissed), and
+   sign a postura by hand. Both are optimistic creates through the veto queue
+   (remoteOps.posturaWrite / salaPlant). The builders are exposed on window.plataformaDev so the
+   files they produce can be inspected from the console without a token. */
+function ptToday() {
+  // LOCAL date, never toISOString(): at 21:00 in DC that is already tomorrow in UTC, and the
+  // guard (`date +%F`) and the auditor (date.today()) both sign in local time
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function ptSlug(title) {
+  const stop = new Set(['this', 'house', 'believes', 'would', 'regrets', 'that', 'the', 'of', 'a', 'an', 'and', 'or', 'to', 'is', 'are', 'in', 'on', 'for', 'not', 'its', 'it', 'be', 'by', 'with', 'only', 'when']);
+  const words = title.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter(w => w && !stop.has(w));
+  const pre = /^this house would/i.test(title.trim()) ? 'thw' : 'thb';
+  const base = (pre + '-' + words.slice(0, 5).join('-')).replace(/-+$/, '') || pre + '-postura';
+  const taken = new Set((corpus ? corpus.notes : []).map(n => n.slug));
+  let slug = base, i = 2;
+  while (taken.has(slug)) slug = `${base}-${i++}`;
+  return slug;
+}
+function ptFm(obj) {
+  // flat YAML only — the room's own parser (parseFrontmatter) does not survive nesting
+  return '---\n' + Object.entries(obj).filter(([, v]) => v !== '' && v != null)
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? '[' + v.join(', ') + ']' : String(v).replace(/\s+/g, ' ').trim()}`).join('\n') + '\n---\n';
+}
+function ptLive() {
+  return (corpus ? corpus.notes : []).filter(n => n.folder === 'posturas' && n.fm.type === 'postura' && n.fm.estado !== 'abandonada' && n.fm.sensitivity !== 'private');
+}
+function buildPosturaFiles(f) {
+  const today = ptToday(), slug = ptSlug(f.title), files = [];
+  let motivo = String(f.motivo || '').trim().replace(/^\[\[|\]\]$/g, '');
+  let desde = f.desde || today;
+  if (!motivo) {
+    if (!String(f.razon || '').trim()) throw new Error('una postura sin fuente es lo único que este cajón no puede guardar — nombra una ficha o escribe la razón');
+    const nslug = `${slug}-razon`;
+    files.push({ path: `notas/${nslug}.md`, message: `postura: ${slug} — razón (desde El Archivo)`,
+      content: ptFm({ type: 'claim', title: `Razón de: ${f.title.trim()}`, date: today, account: 'lag164', tags: f.tags, sensitivity: f.sensitivity, provenance: 'human' })
+        + `\n${String(f.razon).trim()}\n\nDicho en El Archivo, ${today}; fuente de [[${slug}]].\n` });
+    motivo = nslug; desde = today;
+  }
+  const fm = { type: 'postura', title: f.title.trim(), estado: f.estado, desde, firmado: today, motivo: `[[${motivo}]]`, date: desde,
+               account: 'lag164', tags: f.tags, sensitivity: f.sensitivity, provenance: 'human' };
+  const contra = String(f.contra || '').trim() || `The corpus has not been searched for this one yet. Run \`/postura ${slug}\` for the round.`;
+  files.push({ path: `posturas/${slug}.md`, message: `postura: ${slug} — firmada (desde El Archivo)`,
+    content: ptFm(fm) + `\n${String(f.body).trim()}\n\n## En contra — lo más fuerte que yo mismo he dicho\n${contra}\n` });
+  return { slug, files };
+}
+function buildSimTicket(p, kind) {
+  const today = ptToday(), stamp = Date.now().toString(36);
+  const huella = `sim-${stamp}`;   // real huellas are sha256(kind|target|remedio|arg)[:12] — a stamp can never collide
+  const fm = { type: 'hallazgo', title: kind === 'contradiccion' ? `simulacro · contradicción: ${p.slug}` : `simulacro · sin tocar: ${p.slug}`,
+               kind, target: p.slug, target_path: p.path, severity: kind === 'contradiccion' ? 'S2' : 'S3', remedio: 'nota',
+               remedio_arg: `simulacro-${stamp}`, hint: `/postura ${p.slug}`, huella, status: 'abierta', date: today, simulado: true };
+  const body = kind === 'contradiccion'
+    ? `SIMULACRO. This is what a contradicción ticket looks like when a new ficha of yours argues against [[${p.slug}]].\n\n> (the auditor quotes the contradicting sentence here, verbatim, in the ficha's own language)\n\nRun \`/postura ${p.slug}\` — sign, revise or abandon. Resolving (a) deletes this ticket; dismissing (x) writes a throwaway huella.`
+    : `SIMULACRO. This is what a sin-tocar ticket looks like: [[${p.slug}]] signed more than a year ago, and something new landed in its tags since.\n\nNot a contradiction — a reminder. Run \`/postura ${p.slug}\`; re-signing as is closes it.`;
+  const slug = `hz-${kind}-${p.slug}`.replace(/[^\w-]+/g, '-').slice(0, 70) + `-${huella}`;
+  return { path: `auditoria/${slug}.md`, slug, content: ptFm(fm) + body + '\n', message: `sala: simulacro ${kind} sobre ${p.slug}` };
+}
+function ptAddNote(path, content) { const n = parseNote(path, content); corpus.notes.push(n); saveCorpusCache(); return n; }
+function plantTicket(kind) {
+  if (!corpus) { toast('trae la bodega primero — ⟳', true); return; }
+  const sel = document.getElementById('admin-postura');
+  const p = corpus.notes.find(n => n.path === sel.value);
+  if (!p) { toast('elige una postura viva', true); return; }
+  const t = buildSimTicket(p, kind);
+  ptAddNote(t.path, t.content);
+  document.getElementById('admin-modal').close();
+  view = { mode: 'note', drawer: 'auditoria', slug: t.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 });
+  toast(`☗ simulacro plantado — ${kind} sobre ${p.slug}`);
+  enqueueVeto(`simulacro ${kind} ${p.slug}`, 'salaPlant', [t.path, t.content, t.message], { path: t.path });
+}
+function openAdmin() {
+  const sel = document.getElementById('admin-postura'), live = ptLive();
+  sel.innerHTML = live.length
+    ? live.map(p => `<option value="${escapeHtml(p.path)}">${escapeHtml(String(p.fm.title || p.slug).slice(0, 90))}</option>`).join('')
+    : '<option value="">(sin posturas vivas en la bodega — ⟳)</option>';
+  document.getElementById('admin-modal').showModal();
+}
+function openComposer() {
+  document.getElementById('pt-slugs').innerHTML = (corpus ? corpus.notes : [])
+    .filter(n => !['auditoria', 'contexto', 'bandeja'].includes(n.folder)).map(n => `<option value="${escapeHtml(n.slug)}">`).join('');
+  document.getElementById('pt-desde').value = ptToday();
+  document.getElementById('postura-modal').showModal();
+  setTimeout(() => document.getElementById('pt-title').focus(), 30);
+}
+function submitPostura() {
+  const g = id => document.getElementById(id).value;
+  const f = { title: g('pt-title').trim(), estado: g('pt-estado'), desde: g('pt-desde'), sensitivity: g('pt-sens'), motivo: g('pt-motivo'),
+              razon: g('pt-razon'), body: g('pt-body'), contra: g('pt-contra'),
+              tags: g('pt-tags').split(',').map(s => s.trim().toLowerCase()).filter(Boolean) };
+  if (!f.title) { toast('la moción es el título — escríbela', true); return; }
+  if (!f.body.trim()) { toast('el cuerpo es tu voz — sin él no hay postura', true); return; }
+  if (!f.tags.length) { toast('al menos un tag — así la encuentra el auditor', true); return; }
+  const mslug = f.motivo.trim().replace(/^\[\[|\]\]$/g, '');
+  if (mslug && corpus && !corpus.notes.some(n => n.slug === mslug)) { toast(`no hay ficha con slug “${mslug}” — elige una de la lista, o déjalo vacío y escribe la razón`, true); return; }
+  let built;
+  try { built = buildPosturaFiles(f); } catch (e) { toast(e.message, true); return; }
+  if (!corpus) { toast('trae la bodega primero — ⟳', true); return; }
+  for (const file of built.files) {
+    ptAddNote(file.path, file.content);
+    enqueueVeto(`postura ${built.slug}`, 'posturaWrite', [file.path, file.content, file.message], { path: file.path });
+  }
+  document.getElementById('postura-modal').close();
+  ['pt-title', 'pt-tags', 'pt-motivo', 'pt-razon', 'pt-body', 'pt-contra'].forEach(id => { document.getElementById(id).value = ''; });
+  view = { mode: 'note', drawer: 'posturas', slug: built.slug, q: '' }; renderAll(); window.scrollTo({ top: 0 });
+  toast(`✍ firmada — ${built.slug} (${built.files.length} archivo${built.files.length > 1 ? 's' : ''} en cola)`);
+}
+document.getElementById('admin-toggle').addEventListener('click', openAdmin);
+document.getElementById('admin-plant-contra').addEventListener('click', () => plantTicket('contradiccion'));
+document.getElementById('admin-plant-stale').addEventListener('click', () => plantTicket('sin-tocar'));
+document.getElementById('admin-new-postura').addEventListener('click', () => { document.getElementById('admin-modal').close(); openComposer(); });
+document.getElementById('pt-save').addEventListener('click', submitPostura);
+window.plataformaDev = { buildPosturaFiles, buildSimTicket, ptSlug, openComposer, openAdmin };
+
 async function salaContextoRemote(findingPath, findingSlug, hintText) {
   const j = await ghGetOr404(findingPath);
   if (!j) return;   // ticket already resolved — nothing to annotate
@@ -5990,6 +6168,10 @@ function renderView() {
       + (weak.length ? ` · ${weak.length} ${weak.length === 1 ? 'mención débil apartada' : 'menciones débiles apartadas'}` : '')
     : `${notes.length} ficha${notes.length === 1 ? '' : 's'}${corpus ? ' · bodega ' + new Date(corpus.fetchedAt).toLocaleDateString() : ''}`;
   LIST.weak = weak;
+  if (view.drawer === 'posturas' && !q) {   // La Plataforma: the drawer is the one place a postura is born by hand
+    meta.insertAdjacentHTML('beforeend', ' · <button type="button" class="btn" id="pt-new-btn" title="firmar una convicción a mano">+ postura</button>');
+    document.getElementById('pt-new-btn').addEventListener('click', openComposer);
+  }
   if (!notes.length) {
     root.innerHTML = `<div class="empty-state"><div class="ornament">❧</div><h3>${q ? 'nada en los cajones' : 'cajón vacío'}</h3><p>${q ? 'Ninguna ficha contiene eso. El barrido (Fase B) llenará los estantes.' : 'Aún no hay fichas aquí.'}</p></div>`;
     return;
